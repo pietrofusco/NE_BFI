@@ -1,0 +1,11 @@
+{
+  "python": "3.11.15",
+  "numpy": "2.4.6",
+  "scipy": "1.17.1",
+  "pandas": "3.0.3",
+  "scikit-learn": "1.9.0",
+  "statsmodels": "0.15.0",
+  "torch": "2.13.0+cpu",
+  "joblib": "1.5.3",
+  "matplotlib": "3.11.0"
+}
