@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pipeline tests.  Run with `python test_pipeline.py` (or pytest) from the project root.
-Neural tests need torch and LMM tests need statsmodels; they are skipped if those are missing.
+Pipeline tests. Run with  `python test_pipeline.py`  (or pytest) from the project root.
+Neural tests require torch and LMM tests require statsmodels: they are skipped if missing.
 """
 import importlib.util
 import numpy as np
@@ -56,9 +56,9 @@ def test_bfi_linear_equals_pooled_ridge():
     pred_bfi   = fit_predict_bfi_linear( fold, cfg )['pred']
     tr         = fold['pooled_train']
     pred_ridge = Ridge( alpha = alpha ).fit( tr['X'], tr['Y'].ravel() ).predict( fold['pooled_test']['X'] )
-    assert np.max( np.abs( pred_bfi - pred_ridge ) ) < 1e-8, "linear BFI (sigma2=1) != pooled ridge"
+    assert np.max( np.abs( pred_bfi - pred_ridge ) ) < 1e-8, "linear BFI (sigma2=1) != pooled Ridge"
 
-    # with estimated sigma^2: equivalent to ridge with alpha = sigma^2 * lambda
+    # with estimated sigma^2: equivalent to Ridge with alpha = sigma^2 * lambda
     cfg2 = { 'lambda_local': 1.0, 'lambda_global': 1.0, 'sigma2_mode': 'global' }
     out  = fit_predict_bfi_linear( fold, cfg2 )
     s2   = out['extras']['sigma2']
@@ -68,7 +68,7 @@ def test_bfi_linear_equals_pooled_ridge():
 
 
 def test_old_aggregation_over_regularizes():
-    """A naive aggregation that counts the global prior L times does not reproduce pooled ridge."""
+    """An aggregation that counts the global prior L times does not reproduce pooled Ridge."""
 
     _, fold = _fold()
     feats = { c: d['X_train'] for c, d in fold['local'].items() }
@@ -93,12 +93,12 @@ def test_preprocessing_has_no_leakage():
     tr_idx    = fold['pooled_train']['idx']
     te_idx    = fold['pooled_test']['idx']
 
-    # (a) statistics depend on the training data only
+    # (a) the statistics depend ONLY on the training set
     pp = fold['preproc']
     assert np.allclose( pp.scaler_Y.mean_, raw.Y[tr_idx].mean( axis = 0 ) )
     assert np.allclose( pp.mean_X[:7], raw.X[tr_idx][:, :7].mean( axis = 0 ) )
 
-    # (b) perturbing the test values changes nothing in preprocessing/training
+    # (b) perturbing the TEST values changes nothing in preprocessing/training
     raw2      = simulate_dataset( n_clusters = 8, n_per_cluster = 40, nonlin = 0.0, seed = 3 )
     raw2.X[te_idx] += 1000.0
     raw2.Y[te_idx] += 1000.0
@@ -164,7 +164,7 @@ def test_end_to_end_without_torch():
 
 
 def test_lmm_exploits_cluster_effect():
-    """Regression test: with a strong center effect the LMM must beat pooled ridge (no zero variance)."""
+    """Regression test: with a strong center effect the LMM must beat pooled Ridge (no variance = 0)."""
 
     if not HAS_STATSMODELS:
         print( "  (skipped: statsmodels not available)" )
@@ -214,7 +214,7 @@ def test_default_neural_variants_are_federated():
 # ------------------------------------------------------------------ heterogeneous BFI
 
 def _penalized_ridge_with_center_dummies( fold, lambda_b0, lambda_g, lambda_c ):
-    """Pooled (non-federated) closed-form reference solution."""
+    """Reference closed-form POOLED (non-federated) solution."""
 
     tr  = fold['pooled_train']
     ids = sorted( fold['local'].keys() )
@@ -227,12 +227,12 @@ def _penalized_ridge_with_center_dummies( fold, lambda_b0, lambda_g, lambda_c ):
 
 
 def test_bfi_hetero_fixed_equals_pooled_penalized_ridge():
-    """Without estimation (sigma^2 = 1, tau^2 = 1/lambda_c) the federated heterogeneous BFI is exact."""
+    """Without estimation (sigma^2 = 1, tau^2 = 1/lambda_c) the federated heterogeneous BFI is EXACT."""
 
     _, fold = _fold( seed = 4, n_per_cluster = 15 )
     feats   = { c: d['X_train'] for c, d in fold['local'].items() }
     Ys      = { c: d['Y_train'] for c, d in fold['local'].items() }
-    for lam_s in ( 0.3, 5.0 ):                          # the local prior must have no effect
+    for lam_s in ( 0.3, 5.0 ):                          # the local prior must NOT have any effect
         out = fit_bfi_hetero( feats, Ys, lambda_g = 1.7, lambda_s = lam_s, lambda_c = 2.5, estimate = False )
         th, ids = _penalized_ridge_with_center_dummies( fold, 1e-6, 1.7, 2.5 )
         p = 1 + fold['input_dim']
@@ -251,8 +251,8 @@ def test_bfi_hetero_message_recovers_sufficient_statistics():
 
 
 def test_bfi_hetero_em_equals_lmm_reml():
-    """As lambda_g -> 0 the EM estimate (flat prior on beta, which is integrated out) matches pooled
-    MixedLM REML: fixed effects, sigma^2, tau^2 and center BLUPs."""
+    """With lambda_g -> 0 the EM estimate (beta with a flat prior, hence integrated out) coincides with
+    MixedLM REML on the pooled data: fixed effects, sigma^2, tau^2 and center BLUPs."""
 
     if not HAS_STATSMODELS:
         print( "  (skipped: statsmodels not available)" )
@@ -289,7 +289,7 @@ def test_bfi_hetero_beats_homogeneous_with_center_effect():
     assert r2['BFI-Hetero'] > r2['BFI-Linear'] + 0.05, r2
 
 
-# ------------------------------------------------------------------ early stopping, variance components, simulation
+# ------------------------------------------------------------------ early stopping and variance components
 
 def test_early_stopping_equal_budget():
 
@@ -310,7 +310,7 @@ def test_early_stopping_equal_budget():
         assert ex['best_epoch'] % 5 == 0                 # same checking scheme
     cfg['early_stopping'] = { 'enabled': False }
     ex = fit_predict_neural_bfi( fold, cfg, 0, federated = False, hetero = True )['extras']
-    assert ex['epochs_run'] == 999                       # without early stopping: full epochs
+    assert ex['epochs_run'] == 999                       # without ES: fixed number of epochs
 
 
 def test_validation_split_is_inside_training():
@@ -322,7 +322,7 @@ def test_validation_split_is_inside_training():
         n_tr = tr[c]['X_train'].shape[0]
         n_va = va[c]['X_train'].shape[0] if c in va else 0
         assert n_tr + n_va == d['n_train'] and n_tr >= 2
-        if c in va:                                       # disjoint rows, all taken from training
+        if c in va:                                       # disjoint rows, all from the training set
             rows = { tuple( r ) for r in d['X_train'] }
             assert all( tuple( r ) in rows for r in va[c]['X_train'] )
 
@@ -357,11 +357,11 @@ def test_simulation_mcse_and_resume():
         assert ( summ['n_rep'] == 3 ).all() and summ['R2_mcse'].notna().all()
         assert set( pr['model'] ) == { 'Ridge (local)', 'BFI-Linear' } and pr['dR2_mcse'].notna().all()
         assert ( summ['n_per_cluster'].isin( [5, 20] ) ).all()
-        assert raw.groupby( 'n_per_cluster' )['n_total'].min().loc[5] >= 8 * 5      # at least 5 per center
-        raw2, _, _ = run_simulation( cfg, out_dir = d, verbose = False )             # resume: reads saved parts
+        assert raw.groupby( 'n_per_cluster' )['n_total'].min().loc[5] >= 8 * 5      # minimum 5 per center
+        raw2, _, _ = run_simulation( cfg, out_dir = d, verbose = False )             # resume: reloads
         assert np.allclose( raw.sort_values( ['n_per_cluster', 'rep', 'model'] )['R2'].values,
                             raw2.sort_values( ['n_per_cluster', 'rep', 'model'] )['R2'].values )
-        # no neural model -> paired table has linear models only; figures are still produced
+        # no neural datasets -> paired on linear models only; figures are still generated
         import reporting
         reporting.plot_simulation( summ, pr, d )
         assert ( pathlib.Path( d ) / 'simulation_paired.png' ).exists()
@@ -386,10 +386,10 @@ def test_report_figures_smoke():
                     [ 'forest_metrics.png', 'paired_differences.png', 'learning_curves.png' ] )
 
 
-# ------------------------------------------------------------------ comparators
+# ------------------------------------------------------------------ state-of-the-art comparators
 
 def _pooled_dummy_regression_no_intercept( fold, lambda_g, lambda_int ):
-    """Pooled reference for BFI-Fixed: y = X beta + D gamma, ridge prior, sigma^2 = 1."""
+    """POOLED reference for BFI-Fixed: y = X beta + D gamma, ridge prior, sigma^2 = 1."""
 
     tr  = fold['pooled_train']
     ids = list( fold['local'].keys() )
@@ -407,7 +407,7 @@ def test_bfi_fixed_equals_pooled_dummy_regression():
     _, fold = _fold( seed = 4, n_per_cluster = 12 )
     feats   = { c: d['X_train'] for c, d in fold['local'].items() }
     Ys      = { c: d['Y_train'] for c, d in fold['local'].items() }
-    for lam_s in ( 0.2, 4.0 ):                                    # the local prior must have no effect
+    for lam_s in ( 0.2, 4.0 ):                                    # the local prior must not have any effect
         msgs = { c: local_bfi_fixed_message( feats[c], Ys[c], lambda_s = lam_s, lambda_int = 0.1 ) for c in feats }
         out  = aggregate_bfi_fixed( msgs, lambda_g = 1.3, lambda_int = 0.1, estimate_sigma2 = False )
         th, ids = _pooled_dummy_regression_no_intercept( fold, 1.3, 0.1 )
@@ -417,7 +417,7 @@ def test_bfi_fixed_equals_pooled_dummy_regression():
 
 
 def test_bfi_fixed_sigma2_matches_pooled_fixed_point():
-    """sigma^2 estimated on the server from the messages = fixed point RSS / (N - p_eff) on the pooled data."""
+    """sigma^2 estimated on the server from the messages = fixed point RSS / (N - p_eff) computed on the pooled data."""
 
     from models import local_bfi_fixed_message, aggregate_bfi_fixed
     _, fold = _fold( seed = 8, n_per_cluster = 20 )
@@ -437,7 +437,7 @@ def test_bfi_fixed_sigma2_matches_pooled_fixed_point():
 
 
 def test_bfi_fixed_matches_hetero_without_shrinkage():
-    """With a flat prior on the intercepts (lambda_int -> 0, tau^2 -> inf) BFI-Fixed and BFI-Hetero give the same predictions."""
+    """With a flat prior on the intercepts (lambda_int -> 0, tau^2 -> inf) BFI-Fixed and BFI-Hetero predict the same."""
 
     from models import ( local_bfi_fixed_message, aggregate_bfi_fixed, predict_bfi_fixed,
                          predict_bfi_hetero )
@@ -454,7 +454,7 @@ def test_bfi_fixed_matches_hetero_without_shrinkage():
 
 
 def test_dlmm_equals_lmm_reml_and_ml():
-    """DLMM (one-shot aggregate statistics) = pooled MixedLM: fixed effects, sigma^2, tau^2, BLUPs."""
+    """DLMM (one-shot aggregate statistics) = MixedLM on the pooled data: fixed effects, sigma^2, tau^2, BLUP."""
 
     if not HAS_STATSMODELS:
         print( "  (skipped: statsmodels not available)" )
@@ -471,8 +471,8 @@ def test_dlmm_equals_lmm_reml_and_ml():
     tr   = fold['pooled_train']
     for reml in ( True, False ):
         out = fit_dlmm( summ, reml = reml )
-        # for ML the default statsmodels optimizer stops early (log-likelihood ~1e-8 below DLMM's);
-        # Powell reaches the same optimum
+        # for ML the default statsmodels optimizer stops earlier (log-likelihood ~1e-8 lower
+        # than DLMM's): Powell reaches the same optimum
         lmm = MixedLM( tr['Y'].ravel(), sm.add_constant( tr['X'] ), groups = tr['cluster'] ).fit(
                   reml = reml, **( {} if reml else { 'method': 'powell', 'maxiter': 5000 } ) )
         assert np.max( np.abs( out['beta'] - np.asarray( lmm.fe_params ) ) ) < 1e-5, reml
@@ -519,7 +519,7 @@ def test_communication_rounds_and_message_size():
 
 
 def test_fed_em_with_large_budget_equals_bfi_hetero():
-    """Iterative EM, if allowed to converge, matches BFI-Hetero: only the number of rounds differs."""
+    """Iterative EM, if allowed to converge, coincides with BFI-Hetero: only the number of rounds differs."""
 
     raw = simulate_dataset( n_clusters = 10, n_per_cluster = 12, tau = 0.5, seed = 4 )
     cfg = { 'lambda_local': 1.0, 'lambda_global': 1.0, 'cv': { 'n_splits': 5, 'n_repeats': 1, 'seed': 0 },
@@ -530,8 +530,8 @@ def test_fed_em_with_large_budget_equals_bfi_hetero():
 
 
 def test_fixed_intercepts_overfit_with_tiny_centers():
-    """Regression test: with 5-patient centers and low ICC, fixed intercepts (estimated from ~4 patients) lose
-    to random intercepts; with large centers and high ICC the two specifications converge."""
+    """Regression test: with centers of 5 patients and low ICC, fixed intercepts (estimated from ~4 patients)
+    lose against random intercepts; with large centers and high ICC the two specifications converge."""
 
     cfg = { 'lambda_local': 1.0, 'lambda_global': 1.0, 'cv': { 'n_splits': 5, 'n_repeats': 2, 'seed': 0 } }
     reg = build_registry( cfg, only = [ 'BFI-Fixed', 'BFI-Hetero' ] )
@@ -566,7 +566,7 @@ def test_simulation_incremental_resume_adds_only_missing_models():
         cfg1 = dict( base, simulation = dict( sim, models_linear = [ 'BFI-Linear', 'BFI-Hetero' ] ) )
         raw1, _, _ = run_simulation( cfg1, out_dir = d, verbose = False )
         part = next( ( pathlib.Path( d ) / 'parts' ).glob( '*.csv' ) )
-        old  = pd.read_csv( part ).drop( columns = [ 'comm_rounds' ] )        # file saved without comm_rounds
+        old  = pd.read_csv( part ).drop( columns = [ 'comm_rounds' ] )        # legacy file without comm_rounds
         old.to_csv( part, index = False )
         cfg2 = dict( base, simulation = dict( sim, models_linear = [ 'BFI-Linear', 'BFI-Hetero', 'BFI-Fixed', 'DLMM' ] ) )
         raw2, summ2, pr2 = run_simulation( cfg2, out_dir = d, verbose = False )
@@ -574,7 +574,7 @@ def test_simulation_incremental_resume_adds_only_missing_models():
         assert ( raw2.groupby( 'model' )['rep'].nunique() == 3 ).all()
         a = raw1[ raw1['model'] == 'BFI-Hetero' ].sort_values( 'rep' )['R2'].values
         b = raw2[ raw2['model'] == 'BFI-Hetero' ].sort_values( 'rep' )['R2'].values
-        assert np.allclose( a, b )                                             # existing rows preserved
+        assert np.allclose( a, b )                                             # old rows preserved
         assert ( summ2.set_index( 'model' ).loc['BFI-Hetero', 'comm_rounds'] == 1.0 )
         assert set( pr2['model'] ) == { 'BFI-Linear', 'BFI-Fixed', 'DLMM' }
 
@@ -592,8 +592,8 @@ def test_missing_data_report_and_files():
                           'z' : rng.normal( size = n ), 'y': rng.normal( size = n ) } )
     df.loc[ 0:4, 'a' ]            = np.nan          # 5 missing in A
     df.loc[ df.cl == 'B', 'b' ]   = np.nan          # covariate entirely missing in center B
-    df.loc[ [ 45, 46 ], 'y' ]     = np.nan          # missing target (center C) -> rows dropped
-    df.loc[ 47, 'cl' ]            = np.nan          # missing cluster -> row dropped
+    df.loc[ [ 45, 46 ], 'y' ]     = np.nan          # missing target (center C) -> rows excluded
+    df.loc[ 47, 'cl' ]            = np.nan          # missing cluster -> row excluded
     with tempfile.TemporaryDirectory() as d:
         path = pathlib.Path( d ) / 'toy.csv'
         df.to_csv( path, index = False )

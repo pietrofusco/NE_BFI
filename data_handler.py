@@ -5,39 +5,46 @@ Created on Tue Sep  1 19:57:16 2026
 
 @author: peter
 
-Data loading, preprocessing and cross-validation splits.
+Data loading, leakage-free preprocessing and repeated CV infrastructure.
 
-  * DataManager.load_raw()  reads the CSV with no data-dependent transformation (only drops rows
-                            with missing target/cluster and removes clusters that are too small).
-  * Preprocessor            imputation + standardization, fitted on the training indices of each
-                            fold only, so that no test-set statistics leak into training.
-  * make_repeated_cv_splits repeated k-fold, stratified by cluster (each cluster is split into k parts).
-  * build_fold              builds local/pooled training sets and the pooled test set for one fold,
-                            with optional subsampling of the training set (for learning curves).
+Imputers and scalers (X and Y) are fitted on the training part of each fold
+only, so test-set statistics never influence the training preprocessing:
 
-Preprocessing: all columns of X are centered (continuous ones also scaled to unit variance) and Y
-is centered and scaled.  This way the linear model without intercept (BFI) is exactly equivalent to
-a ridge with intercept on the pooled training data, and the baselines are comparable.
-Means and SDs are aggregable statistics (sums and sums of squares), so in a federated setting they
-can be shared without moving individual records.
+  * DataManager.load_raw()  loads the CSV WITHOUT any data-dependent
+                            transformation (only dropna on target/cluster and
+                            removal of clusters that are too small).
+  * Preprocessor            imputes + standardizes; fitted ONLY on the
+                            training indices of each fold.
+  * make_repeated_cv_splits provides the splits (repeated k-fold, stratified
+                            by cluster: each cluster is divided into k parts).
+  * build_fold              builds local/pooled train + pooled test for one
+                            fold, with optional subsampling of the training set
+                            (used for the learning curves).
+
+Preprocessing choice: ALL columns of X are centered (continuous ones are also
+scaled to unit variance) and Y is centered/scaled. This way the linear model
+without intercept (BFI) is exactly equivalent to a Ridge with intercept on the
+pooled training set, and comparisons between baselines are consistent.
+(Federated note: mean and std are aggregatable statistics - sums and sums of
+squares - so they can be shared without moving individual data.)
 """
 # %%
-
+    
 import numpy  as np
 import pandas as pd
-
-
+    
+    
 from dataclasses           import dataclass
 from dataclasses           import field
 from sklearn.impute        import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-
-
+    
+    
 # %%
-
+    
 @dataclass
 class RawData:
-    """Raw data (X may contain NaN), no learned transformation."""
+    """Raw data (possibly with NaN in X), no learned transformation."""
 
     X             : np.ndarray            # (N, p) float, may contain NaN
     Y             : np.ndarray            # (N, q) float, no NaN
@@ -91,13 +98,13 @@ class DataManager:
                      self.binary_cols + self.zscore_cols )
         missing  = [ c for c in required if c not in df.columns ]
         if missing:
-
-            raise KeyError( f"[{self.name}] columns not found in CSV: {missing}. "
+        
+            raise KeyError( f"[{self.name}] columns missing from the CSV: {missing}. "
                             f"Available: {list(df.columns)}" )
 
         feature_names = self.continuous_cols + self.binary_cols + self.zscore_cols
 
-        # copy of the CSV before any exclusion (for the missing-data report)
+        # copy of the CSV BEFORE any exclusion (for the missing-data report)
         df_csv = df[ required ].copy()
 
         n_csv          = len(df)
@@ -105,7 +112,7 @@ class DataManager:
         miss_cluster   = df[self.cluster_col].isna()
         df = df.dropna( subset = self.target_cols + [self.cluster_col] )
 
-        # drop clusters too small for a sensible CV
+        # Removal of clusters too small for a meaningful CV
         sizes     = df[self.cluster_col].value_counts()
         too_small = sizes[sizes < self.min_cluster_size].index.tolist()
         n_before_small = len(df)
@@ -164,16 +171,16 @@ def missing_data_report( X,
                          name        = 'dataset',
                          top_patterns = 20 ):
     """
-    Describes missing covariate values in the analysed sample (after dropping rows without
+    Describes missing covariate data in the ANALYSED sample (after excluding rows without
     target/cluster and clusters that are too small) and, if df_csv is given, in the original CSV.
 
-    Returns a dict with
-       'summary'     : dict (one row of the overall summary table)
+    -> dict with
+       'summary'     : dict  (one row of the global summary table)
        'by_feature'  : DataFrame, one row per covariate (n and % missing, group, imputation
-                       strategy, % in the original CSV, number of centers where the covariate is
+                       strategy, % in the original CSV, no. of centers where the covariate is
                        entirely missing / has at least one missing value, min/median/max % across centers)
-       'by_cluster'  : DataFrame, one row per center (n subjects, % missing cells, % subjects with at
-                       least one missing value, number of covariates entirely missing in the center)
+       'by_cluster'  : DataFrame, one row per center (n subjects, % missing cells, % subjects with
+                       at least one missing value, n covariates entirely missing in the center)
        'cluster_x_feature' : DataFrame centers x covariates with the % missing
        'patterns'    : DataFrame of the most frequent missingness patterns (1 = missing)
        'targets_csv' : DataFrame, % missing of target and cluster in the original CSV
@@ -185,12 +192,12 @@ def missing_data_report( X,
     groups   = np.asarray( groups )
     strategy = { 'cont': 'median', 'bin': 'most_frequent', 'z': 'median' }
 
-    # ---------------------------------------------- center x covariate
+    # ---------------------------------------------- per center x covariate
     cl_ser = pd.Series( clusters, name = 'cluster' )
     cxf    = pd.DataFrame( M, columns = feature_names ).groupby( cl_ser.values ).mean() * 100.0
     cxf.index.name = 'cluster'
 
-    # ---------------------------------------------- by covariate
+    # ---------------------------------------------- per covariate
     by_feature = pd.DataFrame( { 'feature'                 : feature_names,
                                  'group'                   : groups,
                                  'imputation'              : [ strategy.get( g, '' ) for g in groups ],
@@ -205,7 +212,7 @@ def missing_data_report( X,
         by_feature['pct_missing_csv'] = [ 100.0 * df_csv[f].isna().mean() for f in feature_names ]
     by_feature.insert( 0, 'dataset', name )
 
-    # ---------------------------------------------- by center
+    # ---------------------------------------------- per center
     row_any = M.any( axis = 1 )
     by_cluster = ( pd.DataFrame( { 'cluster'  : clusters,
                                    'cells'    : M.mean( axis = 1 ) * 100.0,
@@ -245,20 +252,20 @@ def missing_data_report( X,
     feat_pct = by_feature.set_index( 'feature' )['pct_missing']
     summary  = { 'dataset'                     : name,
                  **( exclusions or {} ),
-                 'n_subjects'                    : int(n),
-                 'n_clusters'                    : int( len( np.unique( clusters ) ) ),
-                 'n_features'                    : int(p),
-                 'pct_cells_missing'             : float( 100.0 * M.mean() ) if M.size else 0.0,
-                 'n_complete_cases'              : int( (~row_any).sum() ),
-                 'pct_complete_cases'            : float( 100.0 * (~row_any).mean() ) if n else np.nan,
-                 'n_features_with_missing'       : int( (feat_pct > 0).sum() ),
-                 'features_with_missing'         : ', '.join( f"{f} ({v:.1f}%)" for f, v in
+                 'n_subjects'                  : int(n),
+                 'n_clusters'                  : int( len( np.unique( clusters ) ) ),
+                 'n_features'                  : int(p),
+                 'pct_cells_missing'           : float( 100.0 * M.mean() ) if M.size else 0.0,
+                 'n_complete_cases'            : int( (~row_any).sum() ),
+                 'pct_complete_cases'          : float( 100.0 * (~row_any).mean() ) if n else np.nan,
+                 'n_features_with_missing'     : int( (feat_pct > 0).sum() ),
+                 'features_with_missing'       : ', '.join( f"{f} ({v:.1f}%)" for f, v in
                                                             feat_pct[ feat_pct > 0 ].sort_values( ascending = False ).items() ),
-                 'max_feature_pct_missing'       : float( feat_pct.max() ) if p else 0.0,
-                 'max_feature'                   : str( feat_pct.idxmax() ) if p and feat_pct.max() > 0 else '',
-                 'n_clusters_with_missing'       : int( ( by_cluster['pct_cells_missing'] > 0 ).sum() ),
-                 'n_cluster_feature_all_missing' : int( ( cxf >= 100.0 ).values.sum() ),
-                 'n_missing_patterns'            : n_patterns }
+                 'max_feature_pct_missing'     : float( feat_pct.max() ) if p else 0.0,
+                 'max_feature'                 : str( feat_pct.idxmax() ) if p and feat_pct.max() > 0 else '',
+                 'n_clusters_with_missing'     : int( ( by_cluster['pct_cells_missing'] > 0 ).sum() ),
+                 'n_cluster_feature_all_missing': int( ( cxf >= 100.0 ).values.sum() ),
+                 'n_missing_patterns'          : n_patterns }
     if 'small_clusters_removed' in summary:
         summary['small_clusters_removed'] = ', '.join( summary['small_clusters_removed'] )
     for g in ( 'cont', 'bin', 'z' ):
@@ -276,7 +283,7 @@ def missing_data_report( X,
 # %%
 
 class Preprocessor:
-    """Imputation + standardization, to be fitted on the training data only."""
+    """Imputation + standardization, to be fitted ONLY on the training set."""
 
     _STRATEGY = { 'cont': 'median', 'bin': 'most_frequent', 'z': 'median' }
 
@@ -304,7 +311,7 @@ class Preprocessor:
             X_imp[:, cols] = imp.fit_transform( X[:, cols] )
             self.imputers[g] = imp
 
-        # center all columns; scale only the continuous ones to unit variance
+        # Center all columns; scale only the continuous ones to unit variance
         self.mean_X = X_imp.mean( axis = 0 )
         std         = X_imp.std( axis = 0 )
         std[std < 1e-12] = 1.0
@@ -346,9 +353,10 @@ def make_repeated_cv_splits( clusters,
                              n_repeats = 10,
                              seed      = 0 ):
     """
-    Repeated k-fold stratified by cluster: in each repetition every cluster is shuffled and spread
-    over the k folds (with a random offset to balance fold sizes).  Each subject appears in the test
-    set exactly once per repetition.
+    Repeated k-fold STRATIFIED BY CLUSTER: in each repetition every cluster
+    is permuted and distributed across the k folds (with a random offset to
+    balance fold sizes). Each subject appears exactly once in the test set
+    per repetition.
 
     Returns a list of dicts {repeat, fold, train_idx, test_idx}.
     """
@@ -386,7 +394,7 @@ def _subsample_train( train_idx,
                       fraction,
                       rng,
                       min_keep = 4 ):
-    """Subsample the training set within each cluster (for learning curves)."""
+    """Subsamples the training set by cluster (for the learning curves)."""
 
     if fraction >= 1.0:
         return train_idx
@@ -408,7 +416,7 @@ def build_fold( raw,
                 train_fraction = 1.0,
                 seed           = 0 ):
     """
-    Builds the data structures for one fold.  Preprocessing is fitted on train only.
+    Builds the data structures of one fold. Preprocessing fitted ONLY on train.
 
     fold = { 'local'        : {c: {'X_train','Y_train','n_train'}},
              'pooled_train' : {'X','Y','cluster','idx'},
@@ -438,7 +446,7 @@ def build_fold( raw,
 
     unseen = set( np.unique(cl_te) ) - set( local.keys() )
     if unseen:
-        raise ValueError( f"Clusters in the test set but not in the training set: {unseen}" )
+        raise ValueError( f"Clusters in test but not in train: {unseen}" )
 
     return { 'local'        : local,
              'pooled_train' : { 'X': X_tr, 'Y': Y_tr, 'cluster': cl_tr, 'idx': train_idx },

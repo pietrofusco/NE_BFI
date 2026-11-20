@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-simulation.py - simulation study, reported following ADEMP (Morris, White & Crowther, Stat Med 2019).
+simulation.py - simulation study designed according to ADEMP (Morris, White & Crowther, Stat Med 2019)
 
 AIMS
   (1) how much federated partial pooling (BFI-Hetero) gains over local models and homogeneous BFI
       as the number of patients per center decreases and the between-center variance changes;
-  (2) for which (n per center, non-linear share) the federated neural extractor improves on BFI-Hetero.
+  (2) for which (n per center, non-linear share) the FEDERATED neural extractor improves on BFI-Hetero.
 
 DATA-GENERATING MECHANISM (simulate_dataset)
   X : 7 continuous (AR(1) rho = 0.3 + center-specific mean shift), 3 binary (center-specific
@@ -21,8 +21,11 @@ METHODS       cfg['simulation']['models_linear'] on n_datasets replicates; model
               n_datasets_neural (same datasets => paired comparisons).
 PERFORMANCE   mean, MCSE = SD / sqrt(n_rep), win rate = P(dR2 > 0) with binomial MCSE.
 
-Runs in parallel (joblib) and can be resumed: each scenario is saved in out_dir/parts/.  On a later
-run, only the models missing from a saved scenario are computed, on the same datasets.
+Parallel (joblib) and RESUMABLE execution: each scenario is saved in out_dir/parts/.
+
+Default linear models include BFI-Fixed (Jonker et al. 2024), DLMM (Luo et al. 2022),
+Federated EM-LMM (iterative) and Ridge (local, tuned); comm_rounds column.  Resuming is
+incremental: for scenarios already saved, only the missing models are computed.
 """
 # %%
 
@@ -54,6 +57,7 @@ def simulate_dataset( n_clusters      = 25,
 
     rng   = np.random.default_rng( seed )
     p     = p_cont + p_bin + p_z
+    # minimum cluster size 5: a larger minimum would distort the scenarios with n_per_cluster < 10
     sizes = np.maximum( min_size, np.round( n_per_cluster * rng.uniform( 0.8, 1.2, n_clusters ) ).astype(int) )
 
     cov   = 0.3 ** np.abs( np.subtract.outer( np.arange(p_cont), np.arange(p_cont) ) )
@@ -100,7 +104,7 @@ def simulate_dataset( n_clusters      = 25,
                     groups = groups, target_names = ['y'],
                     name = f'sim_nl{nonlin}_n{n_per_cluster}_s{seed}',
                     info = { 'r2_max_pop' : float( np.var( 3.0 * signal ) / np.var( y ) ),
-                             # conditional ceiling: for seen centers the center intercept is predictable
+                             # CONDITIONAL ceiling (seen centers: the center intercept is predictable)
                              'r2_max_cond': float( np.var( 3.0 * ( signal + u ) ) / np.var( y ) ),
                              'icc_true'   : float( tau**2 / ( tau**2 + 1.0 / snr ) ),
                              'sizes'      : sizes.tolist() } )
@@ -109,7 +113,7 @@ def simulate_dataset( n_clusters      = 25,
 # %%
 
 def _scenario_seed( i_tau, i_nl, i_n, rep ):
-    """Deterministic, distinct seed for each (scenario, replicate)."""
+    """Deterministic seed, distinct for each (scenario, replicate)."""
 
     return int( 10_000_000 + 1_000_000 * i_tau + 100_000 * i_nl + 10_000 * i_n + rep )
 
@@ -157,7 +161,7 @@ _KNOWN_ROUNDS = { 'Ridge (local)': 0.0, 'Ridge (local, tuned)': 0.0, 'BFI-Linear
 
 
 def _with_comm_rounds( df ):
-    """For result files saved without the comm_rounds column: fill in the known deterministic values."""
+    """Backward compatibility with result files without the comm_rounds column: known deterministic values."""
 
     df = df.copy()
     if 'comm_rounds' not in df.columns:
@@ -172,9 +176,9 @@ def summarize_simulation( raw_df,
                           reference = 'BFI-Hetero' ):
     """
     -> (summary, paired)
-       summary: per scenario x model -> n_rep, mean R2 and MCSE, mean CalibSlope
-       paired : per scenario x model != reference, on the replicates where both were fitted
-                -> mean dR2, MCSE, win rate and its MCSE
+       summary: per scenario x model  -> n_rep, mean R2 and MCSE, mean CalibSlope
+       paired : per scenario x model != reference, over the replicates in which BOTH were
+                estimated -> mean dR2, MCSE, win rate and MCSE of the win rate
     """
     keys   = [ 'tau', 'nonlin', 'n_per_cluster' ]
     raw_df = _with_comm_rounds( raw_df )
@@ -212,8 +216,8 @@ def run_simulation( cfg,
                     out_dir = None,
                     verbose = True ):
     """
-    Runs the tau x nonlin x n_per_cluster grid.  With out_dir, each completed scenario is saved in
-    out_dir/parts/ and skipped on later runs (resume after an interruption).
+    Runs the tau x nonlin x n_per_cluster grid.  With out_dir, each completed scenario is saved
+    in out_dir/parts/ and skipped on subsequent runs (resume after interruption).
     -> (raw_df, summary, paired)
     """
     from joblib import Parallel, delayed
@@ -251,9 +255,9 @@ def run_simulation( cfg,
                 tag  = f"tau{tau}_nl{nl}_n{n_pc}"
                 path = parts / f"{tag}.csv" if parts is not None else None
 
-                # Incremental resume: if the scenario is already saved, only the missing models are
-                # computed, on the same datasets (deterministic seeds and identical CV splits), and the
-                # rows are appended.  Comparisons stay paired and the neural model is not rerun.
+                # INCREMENTAL resume. If the scenario is already saved, only the missing models are
+                # computed, on the SAME datasets (deterministic seeds and identical CV splits), and
+                # appended: comparisons stay paired and the neural model does not need to be re-run.
                 df_old, miss_lin, miss_nn = None, list( m_lin ), list( m_nn )
                 if path is not None and path.exists():
                     df_old   = _with_comm_rounds( pd.read_csv( path ) )

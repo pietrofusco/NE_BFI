@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-reporting.py - tables and figures.
+reporting.py: tables and figures. All figure text is in English (ready for the paper).
 
-Colors: a fixed categorical palette assigned to the model (not to its rank), so each model keeps the
-same color in every figure.  Each series also has its own marker/line style, so identity does not
-rely on color alone.  Simulation heatmaps use a diverging map: two poles + grey midpoint.
+Colors: fixed categorical palette (non-cyclic order) assigned to the MODEL, not to the rank, so the
+same model has the same color in every figure. Each series also has its own marker/line style
+(identity does not rely on color alone).  Diverging (simulation): two poles + grey midpoint.
 """
 # %%
 
@@ -24,7 +24,7 @@ import pandas as pd
 PALETTE = [ '#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948' ]
 INK, INK2, GRID = '#0b0b0b', '#52514e', '#e4e3df'
 
-# model -> (color, marker, linestyle); models not listed get the free slots in a fixed order
+# model -> (color, marker, linestyle); models not listed receive free slots in a fixed order
 _STYLE = {
     'BFI-Hetero'                                  : ( PALETTE[0], 'o', '-'  ),
     'Mixed-effects LMM'                           : ( INK2,       '',  ':'  ),
@@ -37,7 +37,7 @@ _STYLE = {
     'Neural-BFI-Hetero [Z] FedProx'               : ( PALETTE[3], 's', '-'  ),
     'Neural-BFI-Hetero [X|Z] FedProx (unsup. AE)' : ( PALETTE[4], '^', '-'  ),
     'Neural-BFI-Hetero [X|Z] centralized'         : ( PALETTE[5], 'D', '--' ),
-    # comparators (colors outside the base palette, distinct markers)
+    # state-of-the-art comparators (colors outside the base palette, distinct markers)
     'BFI-Fixed'                                   : ( '#8a5a2b',  'P', '-'  ),
     'DLMM'                                        : ( INK,        'x', '--' ),
     'Federated EM-LMM (iterative)'                : ( '#3aa6b9',  '*', '-.' ),
@@ -122,7 +122,7 @@ def save_tables( summary,
 # %% ---------------------------------------------------------------- missing data
 
 def _missing_text( s, by_feature, targets_csv = None ):
-    """Readable text block for one dataset (used both per dataset and in the overall summary)."""
+    """Human-readable text block for one dataset (used both per dataset and in the global summary)."""
 
     L = [ f"=== {s['dataset']} ===" ]
     if 'n_rows_csv' in s:
@@ -157,7 +157,7 @@ def _missing_text( s, by_feature, targets_csv = None ):
 def save_missing_data( missing,
                        out_dir ):
     """
-    Saves the missing-data report of one dataset (output of data_handler.missing_data_report):
+    Saves the missing-data report of ONE dataset (output of data_handler.missing_data_report):
       missing_summary.json, missing_by_feature.csv, missing_by_cluster.csv,
       missing_cluster_x_feature.csv, missing_patterns.csv, missing_targets_csv.csv, Missing_Data.dat
     """
@@ -183,10 +183,10 @@ def save_missing_data( missing,
 def save_missing_summary( reports,
                           out_dir ):
     """
-    Missing-data summary across all analysed datasets (reports: list of missing_data_report outputs).
+    Missing-data summary over ALL analysed datasets (reports: list of missing_data_report outputs).
       missing_data_summary.csv            : one row per dataset
       missing_data_by_feature_all.csv     : one row per (dataset, covariate)
-      missing_data_summary.dat            : readable version (for the paper / supplementary material)
+      missing_data_summary.dat            : human-readable version (for the paper / supplementary)
     """
     reports = [ r for r in reports if r ]
     if not reports:
@@ -393,9 +393,9 @@ def plot_simulation( summary,
     """
     simulation_heatmap.png : dR2 (neural - reference) by tau x nonlin x n, with 1.96 MCSE and win rate
     simulation_paired.png  : dR2 vs reference (homogeneous BFI, LMM, neural) as n varies (95% MC bands)
-    simulation_r2.png      : absolute R2 by model vs n (local ridge included), with the conditional ceiling.
-                             Uses summary_common (same replicates for every model) if given, so the
-                             curves are comparable; otherwise summary.
+    simulation_r2.png      : absolute R2 by model vs n (including local Ridge), with the conditional ceiling.
+                             Uses summary_common (same replicates for all models) if provided, so that
+                             the curves are comparable; otherwise summary.
     """
     ref   = paired['reference'].iloc[0]
     taus  = sorted( paired['tau'].unique() )
@@ -436,7 +436,7 @@ def plot_simulation( summary,
         fig.savefig( _p( out_dir, 'simulation_heatmap.png' ), dpi = 200 )
         plt.close( fig )
 
-    # ---------- partial pooling vs n (panels: rows = tau, columns = nonlin)
+    # ---------- partial pooling vs n (panels: rows tau, columns nonlin)
     models = [ m for m in list( linear ) + [ neural ] if m in set( paired['model'] ) ]
     handles = {}
     fig, axes = plt.subplots( len(taus), len(nls), figsize = (3.6 * len(nls), 2.9 * len(taus)),
@@ -508,15 +508,15 @@ def plot_simulation( summary,
     plt.close( fig )
 
 
-# %% ---------------------------------------------------------------- simulation tables for the paper
+# %% ---------------------------------------------------------------- paper tables (simulation)
 
 def save_simulation_tables( paired,
                             out_dir,
                             models = ( 'BFI-Fixed', 'BFI-Linear', 'DLMM', 'Federated EM-LMM (iterative)',
                                        'Ridge (local)', 'Ridge (local, tuned)' ) ):
     """
-    For each model: a (tau, nonlin) x n_per_cluster table with 'dR2 (MCSE) [win]' vs the reference,
-    ready to paste into the manuscript (e.g. BFI-Fixed vs BFI-Hetero shows where fixed intercepts
+    For each model: table  (tau, nonlin) x n_per_cluster  with 'dR2 (MCSE) [win]'  vs reference,
+    ready to copy into the manuscript (e.g. BFI-Fixed vs BFI-Hetero table: where fixed intercepts
     overfit with small centers).  File: sim_table_<model>.csv
     """
     out = {}

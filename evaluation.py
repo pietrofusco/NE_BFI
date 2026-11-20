@@ -4,18 +4,19 @@
 evaluation.py - repeated CV, bootstrap, paired comparisons, learning curves.
 
   * build_registry(cfg)   : {model_name: callable(fold, seed) -> {'pred','extras'}}
-  * CVRunner.run(...)     : repeated k-fold stratified by cluster; on every fold all models see the
-                            same data (paired comparisons); preprocessing fitted on the fold's training
-                            part only; predictions mapped back to the original scale.
+  * CVRunner.run(...)     : repeated k-fold stratified by cluster; on EVERY fold all models
+                            see the same data (paired comparisons); preprocessing fitted only
+                            on the training part of the fold; predictions mapped back to the original scale.
   * bootstrap_all / summarize / paired_comparisons / nadeau_bengio_test
-                          : bootstrap CIs over clusters (same resamples for every model).
-  * run_learning_curve    : repeated CV with the training set subsampled within clusters.
+                          : bootstrap CIs over CLUSTERS (same resamples for all models).
+  * run_learning_curve    : repeated CV with training subsampled by cluster.
   * communication_summary : communication rounds and message size per model.
 
+The registry includes BFI-Fixed, DLMM, Federated EM-LMM (iterative), Ridge (local, tuned);
 cfg['models'] (optional) restricts the models run on the real datasets.
 
-The variability across repetitions measures sensitivity to the split, not sampling uncertainty:
-CIs are obtained by resampling subjects/clusters.  Evaluation supports a single target (q = 1) only.
+Variability across repetitions measures sensitivity to the split, NOT sampling uncertainty:
+the CI is obtained by resampling subjects/clusters. Single target only (q = 1) in the evaluation.
 """
 
 
@@ -101,7 +102,7 @@ def _resample_indices( clusters,
 def _boot_metric_matrix( y,
                          P,
                          idx_list ):
-    """-> array (B, 3): MSE, MAE, R2, averaged over repetitions, for each bootstrap sample."""
+    """-> array (B, 3): MSE, MAE, R2, averaged over repetitions, for each bootstrap resample."""
 
     out = np.empty( (len(idx_list), 3) )
     for b, idx in enumerate(idx_list):
@@ -120,7 +121,7 @@ def bootstrap_all( results,
                    n_boot = 2000,
                    unit   = 'cluster',
                    seed   = 0 ):
-    """Returns {model: (B,3)} using the same resamples for every model."""
+    """Returns {model: (B,3)} using the SAME resamples for all models."""
 
     rng      = np.random.default_rng( seed )
     idx_list = _resample_indices( results.clusters, n_boot, unit, rng )
@@ -134,7 +135,7 @@ def bootstrap_all( results,
 def summarize( results,
                boot,
                ci = 0.95 ):
-    """Table with one row per model: metrics and CIs (bootstrap percentiles)."""
+    """Table: one row per model with metrics and CIs (bootstrap percentiles)."""
 
     lo, hi = 100 * (1 - ci) / 2, 100 * (1 + ci) / 2
     rows   = []
@@ -161,9 +162,9 @@ def nadeau_bengio_test( mse_a,
                         n_train,
                         n_test ):
     """
-    Paired t-test on per-fold MSEs with the Nadeau & Bengio (2003) variance correction.
+    Paired t-test with the Nadeau & Bengio (2003) variance correction on per-fold MSEs.
     Heuristic for repeated k-fold: per-fold estimates are not independent (overlapping training
-    sets), and the (1/J + n_test/n_train) correction avoids overly optimistic p-values.
+    sets); the correction (1/J + n_test/n_train) avoids overly optimistic p-values.
     """
     d = np.asarray(mse_a) - np.asarray(mse_b)
     J = len(d)
@@ -181,8 +182,8 @@ def paired_comparisons( results,
                         reference,
                         ci = 0.95 ):
     """
-    Paired comparisons (model - reference) on MSE and R2.
-    R2 difference > 0 => the model beats the reference; same for MSE difference < 0.
+    Paired comparisons  (model - reference)  on MSE and R2.
+    R2 difference > 0 => the model is better than the reference; MSE difference < 0 likewise.
     """
     lo, hi = 100 * (1 - ci) / 2, 100 * (1 + ci) / 2
     rows   = []
@@ -223,9 +224,9 @@ def paired_comparisons( results,
 def variance_components( results ):
     """
     Per-fold variance components (standardized y scale) from the models that estimate them:
-    BFI-Hetero and its variants (extras 'tau2','sigma2'), LMM (extras 'var_re','sigma2').
+    BFI-Hetero and variants (extras 'tau2','sigma2'), LMM (extras 'var_re','sigma2').
     ICC = tau2 / (tau2 + sigma2): share of residual variance due to the center.
-    -> DataFrame: Model, n_folds, tau2, sigma2, ICC (mean), ICC_lo/ICC_hi (2.5/97.5 percentiles over folds).
+    -> DataFrame: Model, n_folds, tau2, sigma2, ICC (mean), ICC_lo/ICC_hi (2.5/97.5 percentiles across folds).
     """
     rows = []
     for m, ex in results.extras.items():
@@ -247,9 +248,9 @@ def variance_components( results ):
 def communication_summary( results ):
     """
     Communication cost per model, from the fold extras:
-      comm_rounds : rounds beyond the common standardization round (0 = local model; NaN = not federated)
+      comm_rounds : rounds BEYOND the common standardization round (0 = local model; NaN = not federated)
       msg_floats  : values sent by one center per round (message size)
-      converged   : share of folds in which the iterative algorithm reached the tolerance within budget
+      converged   : share of folds in which the iterative algorithm reached the tolerance within the budget
     -> DataFrame: Model, federated, rounds_mean, rounds_min, rounds_max, msg_floats, converged
     """
     rows = []
@@ -272,7 +273,7 @@ def communication_summary( results ):
 
 # %% ---------------------------------------------------- CV runner
 
-# Neural variants are federated by default; 'hetero' = BFI with center intercepts.
+#   Neural variants are FEDERATED by default. 'hetero' = BFI with center intercepts.
 DEFAULT_NEURAL_VARIANTS = {
     'Neural-BFI-Hetero [X|Z] FedProx' : { 'skip': True,  'federated': True,  'hetero': True },
     'Neural-BFI-Hetero [Z] FedProx'   : { 'skip': False, 'federated': True,  'hetero': True },
@@ -294,7 +295,7 @@ def build_registry( cfg,
             'Mixed-effects LMM'  : lambda fold, seed: bm.mixed_effects( fold ),
             'BFI-Linear'         : lambda fold, seed: fit_predict_bfi_linear( fold, cfg ),
             'BFI-Hetero'         : lambda fold, seed: fit_predict_bfi_linear( fold, cfg, hetero = True ),
-            # comparators and sensitivity analysis
+            # state-of-the-art comparators and sensitivity analysis
             'BFI-Fixed'                    : lambda fold, seed: fit_predict_bfi_fixed( fold, cfg ),
             'DLMM'                         : lambda fold, seed: fit_predict_dlmm( fold, cfg ),
             'Federated EM-LMM (iterative)' : lambda fold, seed: fit_predict_fed_em_lmm( fold, cfg ),
