@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-reporting.py: tables and figures. All figure text is in English (ready for the paper).
+reporting.py: tables and figures. ALL figure texts are in English (ready for the paper).
 
 Colors: fixed categorical palette (non-cyclic order) assigned to the MODEL, not to the rank, so the
-same model has the same color in every figure. Each series also has its own marker/line style
-(identity does not rely on color alone).  Diverging (simulation): two poles + grey midpoint.
+same model has the same color in all figures. Each series also has its own marker/line style
+(identity not conveyed by color alone).  Diverging (simulation): two poles + grey midpoint.
 """
 # %%
 
@@ -24,7 +24,7 @@ import pandas as pd
 PALETTE = [ '#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948' ]
 INK, INK2, GRID = '#0b0b0b', '#52514e', '#e4e3df'
 
-# model -> (color, marker, linestyle); models not listed receive free slots in a fixed order
+# model -> (color, marker, linestyle); models not listed get free slots in a fixed order
 _STYLE = {
     'BFI-Hetero'                                  : ( PALETTE[0], 'o', '-'  ),
     'Mixed-effects LMM'                           : ( INK2,       '',  ':'  ),
@@ -122,7 +122,7 @@ def save_tables( summary,
 # %% ---------------------------------------------------------------- missing data
 
 def _missing_text( s, by_feature, targets_csv = None ):
-    """Human-readable text block for one dataset (used both per dataset and in the global summary)."""
+    """Human-readable text block for one dataset (used both per dataset and for the global summary)."""
 
     L = [ f"=== {s['dataset']} ===" ]
     if 'n_rows_csv' in s:
@@ -183,7 +183,7 @@ def save_missing_data( missing,
 def save_missing_summary( reports,
                           out_dir ):
     """
-    Missing-data summary over ALL analysed datasets (reports: list of missing_data_report outputs).
+    Missing-data summary over ALL analysed datasets (reports: list of outputs of missing_data_report).
       missing_data_summary.csv            : one row per dataset
       missing_data_by_feature_all.csv     : one row per (dataset, covariate)
       missing_data_summary.dat            : human-readable version (for the paper / supplementary)
@@ -393,8 +393,8 @@ def plot_simulation( summary,
     """
     simulation_heatmap.png : dR2 (neural - reference) by tau x nonlin x n, with 1.96 MCSE and win rate
     simulation_paired.png  : dR2 vs reference (homogeneous BFI, LMM, neural) as n varies (95% MC bands)
-    simulation_r2.png      : absolute R2 by model vs n (including local Ridge), with the conditional ceiling.
-                             Uses summary_common (same replicates for all models) if provided, so that
+    simulation_r2.png      : absolute R2 per model vs n (including local Ridge), with the conditional ceiling.
+                             Uses summary_common (same replicates for all models) if given, so that
                              the curves are comparable; otherwise summary.
     """
     ref   = paired['reference'].iloc[0]

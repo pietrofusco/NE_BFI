@@ -3,30 +3,28 @@
 """
 evaluation.py - repeated CV, bootstrap, paired comparisons, learning curves.
 
-  * build_registry(cfg)   : {model_name: callable(fold, seed) -> {'pred','extras'}}
-  * CVRunner.run(...)     : repeated k-fold stratified by cluster; on EVERY fold all models
+  * build_registry(cfg)   : {model_name: callable(fold, seed) -> {'pred','extras'}};
+                            cfg['models'] (optional) restricts the models run on the real datasets.
+  * CVRunner.run(...)     : repeated k-fold stratified by cluster; on EACH fold all models
                             see the same data (paired comparisons); preprocessing fitted only
                             on the training part of the fold; predictions mapped back to the original scale.
   * bootstrap_all / summarize / paired_comparisons / nadeau_bengio_test
-                          : bootstrap CIs over CLUSTERS (same resamples for all models).
-  * run_learning_curve    : repeated CV with training subsampled by cluster.
+                          : bootstrap CIs over CLUSTERS (same samples for all models).
+  * run_learning_curve    : repeated CV with the training set subsampled by cluster.
   * communication_summary : communication rounds and message size per model.
 
-The registry includes BFI-Fixed, DLMM, Federated EM-LMM (iterative), Ridge (local, tuned);
-cfg['models'] (optional) restricts the models run on the real datasets.
-
-Variability across repetitions measures sensitivity to the split, NOT sampling uncertainty:
+The variability across repetitions measures sensitivity to the split, NOT sampling uncertainty:
 the CI is obtained by resampling subjects/clusters. Single target only (q = 1) in the evaluation.
 """
-
-
+    
+    
 # %%
-
+    
 import time
 import numpy  as np
 import pandas as pd
-
-
+    
+    
 from dataclasses  import dataclass
 from dataclasses  import field
 from scipy        import stats
@@ -38,8 +36,8 @@ from models       import fit_predict_neural_bfi
 from models       import fit_predict_bfi_fixed
 from models       import fit_predict_dlmm
 from models       import fit_predict_fed_em_lmm
-
-
+    
+    
 # %%
 
 @dataclass
@@ -102,7 +100,7 @@ def _resample_indices( clusters,
 def _boot_metric_matrix( y,
                          P,
                          idx_list ):
-    """-> array (B, 3): MSE, MAE, R2, averaged over repetitions, for each bootstrap resample."""
+    """-> array (B, 3): MSE, MAE, R2, averaged over the repetitions, for each bootstrap sample."""
 
     out = np.empty( (len(idx_list), 3) )
     for b, idx in enumerate(idx_list):
@@ -113,23 +111,23 @@ def _boot_metric_matrix( y,
         out[b, 0] = np.mean( err**2 )
         out[b, 1] = np.mean( np.abs(err) )
         out[b, 2] = np.mean( 1.0 - np.sum( err**2, axis = 1 ) / sst )
-
+        
     return out
-
-
+    
+    
 def bootstrap_all( results,
                    n_boot = 2000,
                    unit   = 'cluster',
                    seed   = 0 ):
-    """Returns {model: (B,3)} using the SAME resamples for all models."""
-
+    """Returns {model: (B,3)} using the SAME samples for all models."""
+    
     rng      = np.random.default_rng( seed )
     idx_list = _resample_indices( results.clusters, n_boot, unit, rng )
-
+    
     return { m: _boot_metric_matrix( results.y_true, P, idx_list )
              for m, P in results.preds.items() }
-
-
+    
+    
 # %%
 
 def summarize( results,
@@ -162,9 +160,9 @@ def nadeau_bengio_test( mse_a,
                         n_train,
                         n_test ):
     """
-    Paired t-test with the Nadeau & Bengio (2003) variance correction on per-fold MSEs.
-    Heuristic for repeated k-fold: per-fold estimates are not independent (overlapping training
-    sets); the correction (1/J + n_test/n_train) avoids overly optimistic p-values.
+    Paired t-test with the Nadeau & Bengio (2003) variance correction on the per-fold MSEs.
+    Heuristic for repeated k-fold: per-fold estimates are not independent (overlapping training sets);
+    the correction (1/J + n_test/n_train) avoids overly optimistic p-values.
     """
     d = np.asarray(mse_a) - np.asarray(mse_b)
     J = len(d)
@@ -183,7 +181,7 @@ def paired_comparisons( results,
                         ci = 0.95 ):
     """
     Paired comparisons  (model - reference)  on MSE and R2.
-    R2 difference > 0 => the model is better than the reference; MSE difference < 0 likewise.
+    R2 difference > 0 => the model is better than the reference; likewise for MSE difference < 0.
     """
     lo, hi = 100 * (1 - ci) / 2, 100 * (1 + ci) / 2
     rows   = []
@@ -223,9 +221,9 @@ def paired_comparisons( results,
 
 def variance_components( results ):
     """
-    Per-fold variance components (standardized y scale) from the models that estimate them:
+    Variance components per fold (standardized y scale) from the models that estimate them:
     BFI-Hetero and variants (extras 'tau2','sigma2'), LMM (extras 'var_re','sigma2').
-    ICC = tau2 / (tau2 + sigma2): share of residual variance due to the center.
+    ICC = tau2 / (tau2 + sigma2): share of the residual variance due to the center.
     -> DataFrame: Model, n_folds, tau2, sigma2, ICC (mean), ICC_lo/ICC_hi (2.5/97.5 percentiles across folds).
     """
     rows = []
@@ -273,7 +271,7 @@ def communication_summary( results ):
 
 # %% ---------------------------------------------------- CV runner
 
-#   Neural variants are FEDERATED by default. 'hetero' = BFI with center intercepts.
+#   The neural variants are FEDERATED by default. 'hetero' = BFI with center intercepts.
 DEFAULT_NEURAL_VARIANTS = {
     'Neural-BFI-Hetero [X|Z] FedProx' : { 'skip': True,  'federated': True,  'hetero': True },
     'Neural-BFI-Hetero [Z] FedProx'   : { 'skip': False, 'federated': True,  'hetero': True },
@@ -367,7 +365,8 @@ class CVRunner:
             r, k      = s['repeat'], s['fold']
             fold_seed = seed + 7919 * r + k
             fold      = build_fold( raw, s['train_idx'], s['test_idx'],
-                                    train_fraction = train_fraction, seed = fold_seed )
+                                    train_fraction = train_fraction, seed = fold_seed,
+                                    preproc_opts   = self.cfg.get( 'preprocessing' ) )
             y_te      = fold['pooled_test']['Y_raw'][:, 0]
             n_train.append( len(fold['pooled_train']['idx']) )
             n_test.append( len(s['test_idx']) )

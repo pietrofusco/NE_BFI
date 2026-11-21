@@ -4,14 +4,13 @@
 Created on Tue Sep  1 20:04:50 2026
 
 @author: peter
-    
-MAIN
 
-Missing data: for each dataset Missing_Data.dat + missing_*.csv/json; summary over all
-datasets in save_dir/missing_data_summary.{csv,dat} and missing_data_by_feature_all.csv.
-
-Per-dataset pipeline: repeated CV -> bootstrap CIs + paired comparisons -> learning curves
+Pipeline per dataset: repeated CV -> bootstrap CIs + paired comparisons -> learning curves
 -> importance stability; then the simulation study. Output in config['save_dir'].
+Also written: missing-data reports per dataset (Missing_Data.dat + missing_*.csv/json) and a summary
+over all datasets (save_dir/missing_data_summary.{csv,dat}, missing_data_by_feature_all.csv);
+communication cost (communication.csv); simulation tables (sim_table_*.csv); package versions
+(software_versions.json).
 
 CONFIG
   - datasets   : list of datasets (ChildDev + Nurses from the R package 'BFI', 25 hospitals,
@@ -24,10 +23,10 @@ CONFIG
                  for the UNSUPERVISED autoencoder)
   - hetero     : prior of the heterogeneous BFI (local center intercepts; sigma^2, tau^2 via EM)
   - federated  : FedProx for the neural extractor (default for all main variants)
-  - experiments: enable/disable CV, learning curves, simulation
+  - experiments: enables/disables CV, learning curves, simulation
 
-Hyperparameters FIXED a priori (no tuning on the test set). For legitimate tuning use an inner
-CV on the training part of each fold only.
+Hyperparameters FIXED a priori (no tuning on the test set). For legitimate tuning use an inner CV
+on the training part of each fold only.
 """
     
     
@@ -61,9 +60,12 @@ def software_versions():
     from importlib import metadata
     out = { 'python': platform.python_version() }
     for pkg in ( 'numpy', 'scipy', 'pandas', 'scikit-learn', 'statsmodels', 'torch', 'joblib', 'matplotlib' ):
+    
         try:
             out[pkg] = metadata.version( pkg )
+            
         except metadata.PackageNotFoundError:
+            
             out[pkg] = None
 
     return out
@@ -76,8 +78,8 @@ class Orchestrator:
     def __init__( self,
                   config ):
         
-        self.config   = config
-        self.save_dir = pathlib.Path( config.get( 'save_dir', 'results' ) )
+        self.config          = config
+        self.save_dir        = pathlib.Path( config.get( 'save_dir', 'results' ) )
         self.missing_reports = []
     
     
@@ -130,7 +132,7 @@ class Orchestrator:
         reference = cv.get( 'reference_model', 'BFI-Hetero' )
         
         
-        # ---------------------------------------------------- 1-2) repeated CV + CIs
+        # ---------------------------------------------------- 1-2) repeated CV + CI
         if exp.get( 'cv', True ):
             
             print( "--> REPEATED CV" )
@@ -196,7 +198,7 @@ class Orchestrator:
         summ.to_csv( out / 'simulation_summary.csv', index = False )
         diff.to_csv( out / 'simulation_paired.csv', index = False )
 
-        # absolute R2 on the replicates common to ALL models only (those including the neural model)
+        # absolute R2 on the replicates common to ALL models (those with the neural model)
         sim    = self.config.get( 'simulation', {} )
         n_nn   = min( sim.get( 'n_datasets_neural', 50 ), sim.get( 'n_datasets', 200 ) )
         common = raw_df[ raw_df['rep'] < n_nn ] if n_nn > 0 else raw_df
@@ -232,19 +234,28 @@ class Orchestrator:
         
 # %%
     
-if __name__ == "__main__":
+def default_config():
+    """Configuration of the paper runs (a function, reusable from scripts and tests)."""
     
                 # DATASET
-    config = { 'datasets' : [ { 'name'                  : 'ChildDev',
-                                'data_path'             : "../Datasets/Child_development_data280623_ENCODED.csv",
+    return { 'datasets' : [ { 'name'                  : 'ChildDev',
+                                'data_path'             : '../../Ph.D_Rashid/Data/doi_10_5061_dryad_n8pk0p31r__v20230628/Child_development_data280623_ENCODED.csv',
                                 'targets'               : [ 'totalfci' ],
                                 'continuous_covariates' : [ 'matage', 'matedc', 'hhh_educ', 'povertscore',
                                                             'cogcomp', 'langcomp', 'motcomp' ],
                                 'binary_covariates'     : [ 'childsex', 'ex_bf', 'arm' ],
                                 'zscore_covariates'     : [ 'underweight', 'stunting', 'wasted' ],
                                 'cluster_col'           : 'cluster',
+                                # small centers are the scenario of interest: do not discard them.
+                                # Threshold 5 = technical minimum for within-center 5-fold CV;
+                                # report 10 as a sensitivity analysis.
                                 'min_cluster_size'      : 5 },
                              
+                              # Nurses is a SIMULATED dataset ("three-level simulated data", documentation
+                              # of the R package BFI; origin: Hox et al., Multilevel Analysis): a didactic
+                              # example, not real-world evidence.  In the BFI package version the unused
+                              # columns have been removed: 'expcon' is NOT present.  'hospsize'
+                              # (0/1/2, center level) is treated as a continuous ordinal variable.
                               { 'name'                  : 'Nurses',
                                 'data_path'             : '../Datasets/nurses.csv',   # from the R package BFI (MIT)
                                 'targets'               : [ 'stress' ],
@@ -269,22 +280,33 @@ if __name__ == "__main__":
                                      'alpha_recon' : 0.1,
                                      'beta_pred'   : 1.0, 
                                      'hidden_dim'  : 16 },
+               # Heterogeneous BFI: initial priors; sigma^2 and tau^2 estimated by EM on the server.
+               # max_iter = EM iterations ON THE SERVER (no extra rounds).  200 = value used in the
+               #     published runs; with very small centers and tau^2 close to 0 the EM may hit the cap
+               #     (change in tau^2 <= ~3e-3 in the checks): extras['em_converged'] records it.
+               #     5000 is recommended for new runs.
                'hetero'          : { 'lambda_s' : 1.0,
                                      'lambda_c' : 1.0,
                                      'estimate' : True,
                                      'max_iter' : 200,
                                      'tol'      : 1e-8 },
+               # State-of-the-art comparators
+               #   BFI-Fixed (Jonker et al. 2024): FIXED center intercepts, prior N(0, 1/lambda_int) as
+               #     in the paper (lambda = 0.001); no estimate of tau^2; one round.
+               #   DLMM (Luo et al. 2022): one-shot aggregate statistics, REML on the server.
+               #   Federated EM-LMM: distributed EM, one round per iteration, budget max_rounds
+               #     (= FedProx rounds, for cost comparison); relative tol on (sigma^2, tau^2).
                'fixed_intercepts': { 'lambda_int'      : 1e-3,
                                      'estimate_sigma2' : True },
                'dlmm'            : { 'reml' : True },
                'fed_em'          : { 'max_rounds' : 20,
                                      'tol'        : 1e-6 },
-               # Models run on the real datasets (neural variants are added automatically)
+               # Models run on the real datasets (the neural variants are added automatically)
                'models'          : [ 'Ridge (local)', 'Ridge (local, tuned)', 'Ridge (pooled)',
                                      'MLP (local)', 'MLP (pooled)', 'Mixed-effects LMM',
                                      'BFI-Linear', 'BFI-Fixed', 'DLMM', 'Federated EM-LMM (iterative)',
                                      'BFI-Hetero' ],
-               # English names (they appear in the figures). All main variants are FEDERATED
+               # Names in English (they appear in the figures). All main variants are FEDERATED
                # (FedProx). The centralized one is a NON-federated reference, not an upper bound.
                'neural_variants' : { 'Neural-BFI-Hetero [X|Z] FedProx'             : { 'skip'      : True,
                                                                                        'federated' : True,
@@ -303,6 +325,8 @@ if __name__ == "__main__":
                'federated'               : { 'rounds'       : 20,
                                              'local_epochs' : 15,
                                              'mu_prox'      : 0.01 },
+               # early stopping with internal validation per center (20%), same budget for
+               # federated and centralized (max = rounds x local_epochs, check every local_epochs).
                'early_stopping'          : { 'enabled'      : True,
                                              'val_fraction' : 0.2,
                                              'patience'     : 3 },
@@ -321,6 +345,14 @@ if __name__ == "__main__":
         'learning_curve' : { 'fractions' : [0.25, 0.5, 0.75, 1.0], 
                              'n_repeats' : 3, 
                              'n_boot'    : 500 },
+        
+        # ADEMP simulation. Grid tau x nonlin x n_per_cluster; 'n_datasets' replicates for the
+        # linear models (fast), 'n_datasets_neural' for the federated neural model (slow). Results
+        # saved per scenario in results/simulation/parts/: the run can be interrupted and resumed.
+        # Measured times (1 core): ~50 s per dataset with the neural model (independent of n: the
+        # FedProx rounds dominate), ~1 s for the linear models only. Full grid: 30 scenarios x 50
+        # neural datasets ~ 21 core-hours + ~2 core-hours for the linear models => ~3 hours with
+        # 8 cores, ~12 hours with 2 cores.  For a first check: 'n_datasets_neural': 10 (~5 core-hours).
         'simulation' : { 'tau'               : [0.3, 0.8],
                          'nonlin'            : [0.0, 0.3, 0.6],
                          'n_per_cluster'     : [5, 10, 20, 50, 100],
@@ -332,6 +364,8 @@ if __name__ == "__main__":
                          'covariate_shift'   : 0.3,
                          'snr'               : 1.0,
                          'latent_dim'        : 8,
+                         # Incremental resume: in the scenarios already in results/simulation/parts/ ONLY the
+                         # missing models are computed, on the same datasets (the neural model is not rerun).
                          'models_linear'     : [ 'Ridge (local)', 'Ridge (pooled)', 'Mixed-effects LMM',
                                                  'BFI-Linear', 'BFI-Hetero', 'BFI-Fixed', 'DLMM',
                                                  'Federated EM-LMM (iterative)', 'Ridge (local, tuned)' ],
@@ -344,15 +378,18 @@ if __name__ == "__main__":
                           'learning_curve' : True, 
                           'simulation'     : True },
         
-        'save_dir' : 'results'
+        'save_dir' : 'results',
+    
     }
     
     
 # %%
-    
-    orchestrator = Orchestrator( config = config )
-    
+
+if __name__ == "__main__":
+
+    orchestrator = Orchestrator( config = default_config() )
+
     orchestrator.run()
-    
-    
+
+
 # %%

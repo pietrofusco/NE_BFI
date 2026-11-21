@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pipeline tests. Run with  `python test_pipeline.py`  (or pytest) from the project root.
-Neural tests require torch and LMM tests require statsmodels: they are skipped if missing.
+Pipeline tests. Run with  `python test_pipeline.py`  (or pytest), from the project root.
+The neural tests require torch and the LMM tests statsmodels: they are skipped if these are missing.
 """
 import importlib.util
 import numpy as np
@@ -68,7 +68,7 @@ def test_bfi_linear_equals_pooled_ridge():
 
 
 def test_old_aggregation_over_regularizes():
-    """An aggregation that counts the global prior L times does not reproduce pooled Ridge."""
+    """The naive aggregation formula, which counts the global prior L times, does not reproduce pooled Ridge."""
 
     _, fold = _fold()
     feats = { c: d['X_train'] for c, d in fold['local'].items() }
@@ -98,7 +98,7 @@ def test_preprocessing_has_no_leakage():
     assert np.allclose( pp.scaler_Y.mean_, raw.Y[tr_idx].mean( axis = 0 ) )
     assert np.allclose( pp.mean_X[:7], raw.X[tr_idx][:, :7].mean( axis = 0 ) )
 
-    # (b) perturbing the TEST values changes nothing in preprocessing/training
+    # (b) perturbing the TEST values changes nothing in the preprocessing/training
     raw2      = simulate_dataset( n_clusters = 8, n_per_cluster = 40, nonlin = 0.0, seed = 3 )
     raw2.X[te_idx] += 1000.0
     raw2.Y[te_idx] += 1000.0
@@ -179,7 +179,7 @@ def test_lmm_exploits_cluster_effect():
     summ = summarize( res, boot ).set_index( 'Model' )
     assert summ.loc['Mixed-effects LMM', 'R2'] > summ.loc['Ridge (pooled)', 'R2'] + 0.05
     v = [ e['var_re'] for e in res.extras['Mixed-effects LMM'] ]
-    assert min( v ) > 0.05, f"degenerate random-intercept variance: {v}"
+    assert min( v ) > 0.05, f"degenerate random intercept variance: {v}"
 
 
 def test_neural_bfi_smoke():
@@ -214,7 +214,7 @@ def test_default_neural_variants_are_federated():
 # ------------------------------------------------------------------ heterogeneous BFI
 
 def _penalized_ridge_with_center_dummies( fold, lambda_b0, lambda_g, lambda_c ):
-    """Reference closed-form POOLED (non-federated) solution."""
+    """Closed-form POOLED (non-federated) reference solution."""
 
     tr  = fold['pooled_train']
     ids = sorted( fold['local'].keys() )
@@ -251,8 +251,8 @@ def test_bfi_hetero_message_recovers_sufficient_statistics():
 
 
 def test_bfi_hetero_em_equals_lmm_reml():
-    """With lambda_g -> 0 the EM estimate (beta with a flat prior, hence integrated out) coincides with
-    MixedLM REML on the pooled data: fixed effects, sigma^2, tau^2 and center BLUPs."""
+    """With lambda_g -> 0 the EM estimate (beta with a flat prior, hence integrated out) coincides with MixedLM
+    REML on the pooled data: fixed effects, sigma^2, tau^2 and center BLUPs."""
 
     if not HAS_STATSMODELS:
         print( "  (skipped: statsmodels not available)" )
@@ -289,7 +289,7 @@ def test_bfi_hetero_beats_homogeneous_with_center_effect():
     assert r2['BFI-Hetero'] > r2['BFI-Linear'] + 0.05, r2
 
 
-# ------------------------------------------------------------------ early stopping and variance components
+# ------------------------------------------------------------------ early stopping, variance components, simulation
 
 def test_early_stopping_equal_budget():
 
@@ -307,10 +307,10 @@ def test_early_stopping_equal_budget():
     for fed in ( True, False ):
         ex = fit_predict_neural_bfi( fold, cfg, 0, federated = fed, hetero = True )['extras']
         assert 0 <= ex['best_epoch'] <= ex['epochs_run'] <= budget, ( fed, ex )
-        assert ex['best_epoch'] % 5 == 0                 # same checking scheme
+        assert ex['best_epoch'] % 5 == 0                 # same checking schedule
     cfg['early_stopping'] = { 'enabled': False }
     ex = fit_predict_neural_bfi( fold, cfg, 0, federated = False, hetero = True )['extras']
-    assert ex['epochs_run'] == 999                       # without ES: fixed number of epochs
+    assert ex['epochs_run'] == 999                       # without ES: all epochs are run
 
 
 def test_validation_split_is_inside_training():
@@ -358,10 +358,10 @@ def test_simulation_mcse_and_resume():
         assert set( pr['model'] ) == { 'Ridge (local)', 'BFI-Linear' } and pr['dR2_mcse'].notna().all()
         assert ( summ['n_per_cluster'].isin( [5, 20] ) ).all()
         assert raw.groupby( 'n_per_cluster' )['n_total'].min().loc[5] >= 8 * 5      # minimum 5 per center
-        raw2, _, _ = run_simulation( cfg, out_dir = d, verbose = False )             # resume: reloads
+        raw2, _, _ = run_simulation( cfg, out_dir = d, verbose = False )             # resume: reads back
         assert np.allclose( raw.sort_values( ['n_per_cluster', 'rep', 'model'] )['R2'].values,
                             raw2.sort_values( ['n_per_cluster', 'rep', 'model'] )['R2'].values )
-        # no neural datasets -> paired on linear models only; figures are still generated
+        # neural model with dataset 0 missing -> paired only on the linear models; figures are still generated
         import reporting
         reporting.plot_simulation( summ, pr, d )
         assert ( pathlib.Path( d ) / 'simulation_paired.png' ).exists()
@@ -471,8 +471,8 @@ def test_dlmm_equals_lmm_reml_and_ml():
     tr   = fold['pooled_train']
     for reml in ( True, False ):
         out = fit_dlmm( summ, reml = reml )
-        # for ML the default statsmodels optimizer stops earlier (log-likelihood ~1e-8 lower
-        # than DLMM's): Powell reaches the same optimum
+        # for ML the default statsmodels optimizer stops earlier (log-likelihood ~1e-8 lower than
+        # DLMM's): Powell reaches the same optimum
         lmm = MixedLM( tr['Y'].ravel(), sm.add_constant( tr['X'] ), groups = tr['cluster'] ).fit(
                   reml = reml, **( {} if reml else { 'method': 'powell', 'maxiter': 5000 } ) )
         assert np.max( np.abs( out['beta'] - np.asarray( lmm.fe_params ) ) ) < 1e-5, reml
@@ -483,7 +483,7 @@ def test_dlmm_equals_lmm_reml_and_ml():
 
 
 def test_dlmm_equals_bfi_hetero_with_flat_prior():
-    """Two independent one-shot algorithms (EM on BFI messages; direct maximization on aggregate
+    """Two independent one-shot algorithms (EM on the BFI messages; direct maximization on aggregate
     statistics) reach the same REML solution."""
 
     from models import local_dlmm_summary, fit_dlmm
@@ -519,7 +519,7 @@ def test_communication_rounds_and_message_size():
 
 
 def test_fed_em_with_large_budget_equals_bfi_hetero():
-    """Iterative EM, if allowed to converge, coincides with BFI-Hetero: only the number of rounds differs."""
+    """The iterative EM, if allowed to converge, coincides with BFI-Hetero: only the number of rounds differs."""
 
     raw = simulate_dataset( n_clusters = 10, n_per_cluster = 12, tau = 0.5, seed = 4 )
     cfg = { 'lambda_local': 1.0, 'lambda_global': 1.0, 'cv': { 'n_splits': 5, 'n_repeats': 1, 'seed': 0 },
@@ -530,7 +530,7 @@ def test_fed_em_with_large_budget_equals_bfi_hetero():
 
 
 def test_fixed_intercepts_overfit_with_tiny_centers():
-    """Regression test: with centers of 5 patients and low ICC, fixed intercepts (estimated from ~4 patients)
+    """Regression test: with centers of 5 patients and low ICC the fixed intercepts (estimated from ~4 patients)
     lose against random intercepts; with large centers and high ICC the two specifications converge."""
 
     cfg = { 'lambda_local': 1.0, 'lambda_global': 1.0, 'cv': { 'n_splits': 5, 'n_repeats': 2, 'seed': 0 } }
@@ -566,7 +566,7 @@ def test_simulation_incremental_resume_adds_only_missing_models():
         cfg1 = dict( base, simulation = dict( sim, models_linear = [ 'BFI-Linear', 'BFI-Hetero' ] ) )
         raw1, _, _ = run_simulation( cfg1, out_dir = d, verbose = False )
         part = next( ( pathlib.Path( d ) / 'parts' ).glob( '*.csv' ) )
-        old  = pd.read_csv( part ).drop( columns = [ 'comm_rounds' ] )        # legacy file without comm_rounds
+        old  = pd.read_csv( part ).drop( columns = [ 'comm_rounds' ] )        # file without the comm_rounds column
         old.to_csv( part, index = False )
         cfg2 = dict( base, simulation = dict( sim, models_linear = [ 'BFI-Linear', 'BFI-Hetero', 'BFI-Fixed', 'DLMM' ] ) )
         raw2, summ2, pr2 = run_simulation( cfg2, out_dir = d, verbose = False )
@@ -577,6 +577,56 @@ def test_simulation_incremental_resume_adds_only_missing_models():
         assert np.allclose( a, b )                                             # old rows preserved
         assert ( summ2.set_index( 'model' ).loc['BFI-Hetero', 'comm_rounds'] == 1.0 )
         assert set( pr2['model'] ) == { 'BFI-Linear', 'BFI-Fixed', 'DLMM' }
+
+
+def test_scenario_seed_by_value_matches_published_grid():
+    """The value-based seed coincides with the index-based formula on the grid of the published runs."""
+
+    from simulation import scenario_seed, _scenario_seed
+    for i_t, t in enumerate( [ 0.3, 0.8 ] ):
+        for i_l, nl in enumerate( [ 0.0, 0.3, 0.6 ] ):
+            for i_n, n in enumerate( [ 5, 10, 20, 50, 100 ] ):
+                assert scenario_seed( t, nl, n, 7 ) == _scenario_seed( i_t, i_l, i_n, 7 )
+    assert scenario_seed( 0.5, 0.0, 15, 0 ) != scenario_seed( 0.5, 0.0, 15, 1 )
+    assert scenario_seed( 0.5, 0.0, 15, 0 ) == scenario_seed( 0.5, 0.0, 15, 0 )
+
+
+def test_simulation_resume_adds_replicates():
+    """Regression test: increasing n_datasets on resume adds the missing replicates."""
+
+    import tempfile
+    from simulation import run_simulation
+    base = { 'lambda_local': 1.0, 'lambda_global': 1.0 }
+    sim  = { 'tau': [0.3], 'nonlin': [0.0], 'n_per_cluster': [5], 'n_clusters': 8, 'n_datasets': 2,
+             'n_datasets_neural': 0, 'n_jobs': 1, 'models_neural': [], 'reference': 'BFI-Hetero',
+             'models_linear': [ 'BFI-Linear', 'BFI-Hetero' ] }
+    with tempfile.TemporaryDirectory() as d:
+        raw1, _, _ = run_simulation( dict( base, simulation = sim ), out_dir = d, verbose = False )
+        raw2, summ, _ = run_simulation( dict( base, simulation = dict( sim, n_datasets = 4 ) ), out_dir = d, verbose = False )
+        assert ( raw2.groupby( 'model' )['rep'].nunique() == 4 ).all()
+        assert ( summ['n_rep'] == 4 ).all()
+        old = raw1.sort_values( [ 'model', 'rep' ] )['R2'].values
+        new = raw2[ raw2['rep'] < 2 ].sort_values( [ 'model', 'rep' ] )['R2'].values
+        assert np.allclose( old, new )                                      # old replicates intact
+
+
+def test_simulation_resume_keeps_datasets_when_grid_changes():
+    """Regression test: inserting a value into the grid and adding a model does not change the datasets of an
+    already saved scenario: the new model uses the same seeds as the old models."""
+
+    import tempfile
+    from simulation import run_simulation
+    base = { 'lambda_local': 1.0, 'lambda_global': 1.0 }
+    sim  = { 'tau': [0.3], 'nonlin': [0.0], 'n_per_cluster': [5, 20], 'n_clusters': 8, 'n_datasets': 2,
+             'n_datasets_neural': 0, 'n_jobs': 1, 'models_neural': [], 'reference': 'BFI-Hetero',
+             'models_linear': [ 'BFI-Linear', 'BFI-Hetero' ] }
+    with tempfile.TemporaryDirectory() as d:
+        run_simulation( dict( base, simulation = sim ), out_dir = d, verbose = False )
+        sim2 = dict( sim, n_per_cluster = [5, 10, 20], models_linear = [ 'BFI-Linear', 'BFI-Hetero', 'DLMM' ] )
+        raw, _, _ = run_simulation( dict( base, simulation = sim2 ), out_dir = d, verbose = False )
+        for n in ( 5, 20 ):
+            r = raw[ raw['n_per_cluster'] == n ]
+            assert ( r.groupby( 'rep' )['seed'].nunique() == 1 ).all(), n
 
 
 # ------------------------------------------------------------------ missing data
@@ -618,6 +668,99 @@ def test_missing_data_report_and_files():
             assert ( pathlib.Path( d ) / f ).exists(), f
         assert len( pd.read_csv( pathlib.Path( d ) / 'missing_data_summary.csv' ) ) == 2
         json.loads( ( pathlib.Path( d ) / 'missing_summary.json' ).read_text() )
+
+
+# ------------------------------------------------------------------ sensitivity to missing data
+
+def _raw_with_missing( seed = 0 ):
+
+    raw = simulate_dataset( n_clusters = 6, n_per_cluster = 30, nonlin = 0.0, seed = seed )
+    rng = np.random.default_rng( seed )
+    X   = raw.X.copy()
+    X[ rng.uniform( size = X.shape[0] ) < 0.15, 0 ] = np.nan             # continuous
+    X[ rng.uniform( size = X.shape[0] ) < 0.10, 1 ] = np.nan             # continuous
+    X[ rng.uniform( size = X.shape[0] ) < 0.10, 7 ] = np.nan             # binary
+    raw.X = X
+    return raw
+
+
+def test_preprocessor_default_unchanged():
+    """The missing-data options do not change the default behavior (median/mode, no indicators)."""
+
+    from data_handler import Preprocessor
+    from sklearn.impute import SimpleImputer
+    raw = _raw_with_missing()
+    pp  = Preprocessor( raw.groups ).fit( raw.X, raw.Y )
+    Xt  = pp.transform_X( raw.X )
+    ref = raw.X.copy()
+    for g, s in ( ( 'cont', 'median' ), ( 'bin', 'most_frequent' ), ( 'z', 'median' ) ):
+        c = np.where( raw.groups == g )[0]
+        ref[:, c] = SimpleImputer( strategy = s ).fit_transform( raw.X[:, c] )
+    sd = np.where( raw.groups == 'cont', ref.std( 0 ), 1.0 )
+    assert np.allclose( Xt, ( ref - ref.mean( 0 ) ) / sd )
+
+
+def test_federated_mean_imputation_one_round():
+    """Imputed mean, and mean and SD after imputation, are obtained from ONE round of per-center statistics."""
+
+    from data_handler import Preprocessor, center_mean_imputation_stats, federated_mean_imputation_moments
+    raw = _raw_with_missing( 1 )
+    st  = [ center_mean_imputation_stats( raw.X[ raw.clusters == c ] ) for c in np.unique( raw.clusters ) ]
+    m, mean, sd = federated_mean_imputation_moments( st )
+    pp  = Preprocessor( raw.groups, imputation = 'mean' ).fit( raw.X, raw.Y )
+    c   = np.where( raw.groups == 'cont' )[0]
+    assert np.allclose( m[c], np.nanmean( raw.X[:, c], axis = 0 ) )
+    assert np.allclose( mean[c], pp.mean_X[c] ) and np.allclose( sd[c], pp.std_X[c] )
+
+
+def test_missingness_indicators_and_delta():
+
+    from data_handler import Preprocessor
+    raw = _raw_with_missing( 2 )
+    M   = np.isnan( raw.X )
+    pp  = Preprocessor( raw.groups, indicators = True ).fit( raw.X, raw.Y )
+    Xt  = pp.transform_X( raw.X )
+    assert Xt.shape[1] == raw.X.shape[1] + 3 and list( pp.groups_out[-3:] ) == [ 'bin' ] * 3
+    assert np.allclose( Xt[:, -3] + pp.mean_X[-3], M[:, 0] )             # indicator = mask (centered)
+
+    X2 = raw.X.copy()
+    X2[:, 2] = np.where( M[:, 0], np.nan, X2[:, 2] )                     # cont2 always missing together with cont0
+    pp2 = Preprocessor( raw.groups, indicators = True ).fit( X2, raw.Y )
+    assert list( pp2.ind_cols_ ) == [ 0, 1, 7 ]                          # a single indicator per mask
+
+    base = Preprocessor( raw.groups, feature_names = raw.feature_names ).fit( raw.X, raw.Y )
+    shft = Preprocessor( raw.groups, feature_names = raw.feature_names, delta = { 'cont0': -1.0 } ).fit( raw.X, raw.Y )
+    a = base.transform_X( raw.X ) * base.std_X + base.mean_X
+    b = shft.transform_X( raw.X ) * shft.std_X + shft.mean_X
+    d = b - a
+    assert np.allclose( d[ M[:, 0], 0 ], -np.nanstd( raw.X[:, 0] ) )      # only the imputed values are shifted
+    assert np.allclose( d[ ~M[:, 0], 0 ], 0 ) and np.allclose( d[:, 1:], 0 )
+
+
+def test_iterative_imputation_has_no_leakage():
+
+    from data_handler import build_fold
+    raw = _raw_with_missing( 3 )
+    s   = make_repeated_cv_splits( raw.clusters, 5, 1, seed = 0 )[0]
+    f1  = build_fold( raw, s['train_idx'], s['test_idx'], preproc_opts = { 'imputation': 'iterative' } )
+    raw.X[ s['test_idx'] ] += 1000.0
+    f2  = build_fold( raw, s['train_idx'], s['test_idx'], preproc_opts = { 'imputation': 'iterative' } )
+    assert np.allclose( f1['pooled_train']['X'], f2['pooled_train']['X'] )
+    assert np.isfinite( f1['pooled_test']['X'] ).all()
+
+
+def test_missing_sensitivity_runs():
+
+    import sensitivity_missing as sm
+    raw = _raw_with_missing( 4 )
+    cfg = { 'lambda_local': 1.0, 'lambda_global': 1.0, 'cv': { 'n_splits': 5, 'n_repeats': 1, 'seed': 0, 'n_boot': 50 } }
+    sc  = sm.default_scenarios( delta_features = ( 'cont0', ), deltas = ( 1.0, ) )
+    summ, paired = sm.run_missing_sensitivity( raw, cfg, models = [ 'BFI-Linear', 'BFI-Hetero' ], scenarios = sc,
+                                               verbose = False )
+    assert set( paired['scenario'] ) == set( sc ) and ( paired['Model'] == 'BFI-Linear' ).all()
+    assert summ.loc[ summ['scenario'] == 'complete_case', 'n' ].iloc[0] == int( ( ~np.isnan( raw.X ).any( 1 ) ).sum() )
+    oc, smd = sm.mcar_diagnostics( raw, n_perm = 99 )
+    assert 0 < oc['p_center_perm'].iloc[0] <= 1 and len( smd ) > 0
 
 
 if __name__ == "__main__":

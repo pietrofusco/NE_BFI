@@ -5,27 +5,25 @@ Created on Tue Sep  1 19:57:16 2026
 
 @author: peter
 
-Data loading, leakage-free preprocessing and repeated CV infrastructure.
+Data loading, preprocessing and cross-validation infrastructure.
 
-Imputers and scalers (X and Y) are fitted on the training part of each fold
-only, so test-set statistics never influence the training preprocessing:
-
-  * DataManager.load_raw()  loads the CSV WITHOUT any data-dependent
-                            transformation (only dropna on target/cluster and
-                            removal of clusters that are too small).
-  * Preprocessor            imputes + standardizes; fitted ONLY on the
-                            training indices of each fold.
+  * DataManager.load_raw()  loads the CSV WITHOUT any data-dependent transformation
+                            (only dropna on target/cluster and removal of clusters
+                            that are too small).
+  * Preprocessor            imputes + standardizes; it is fitted ONLY on the
+                            training indices of each fold, so that test-set
+                            statistics never influence the preprocessing.
   * make_repeated_cv_splits provides the splits (repeated k-fold, stratified
-                            by cluster: each cluster is divided into k parts).
+                            by cluster: each cluster is split into k parts).
   * build_fold              builds local/pooled train + pooled test for one
                             fold, with optional subsampling of the training set
                             (used for the learning curves).
 
 Preprocessing choice: ALL columns of X are centered (continuous ones are also
-scaled to unit variance) and Y is centered/scaled. This way the linear model
+scaled to unit variance) and Y is centered/scaled. In this way the linear model
 without intercept (BFI) is exactly equivalent to a Ridge with intercept on the
-pooled training set, and comparisons between baselines are consistent.
-(Federated note: mean and std are aggregatable statistics - sums and sums of
+pooled training set, and the comparisons between baselines are consistent.
+(Federated note: mean and std are aggregable statistics - sums and sums of
 squares - so they can be shared without moving individual data.)
 """
 # %%
@@ -112,7 +110,7 @@ class DataManager:
         miss_cluster   = df[self.cluster_col].isna()
         df = df.dropna( subset = self.target_cols + [self.cluster_col] )
 
-        # Removal of clusters too small for a meaningful CV
+        # Removal of clusters that are too small for a meaningful CV
         sizes     = df[self.cluster_col].value_counts()
         too_small = sizes[sizes < self.min_cluster_size].index.tolist()
         n_before_small = len(df)
@@ -171,14 +169,14 @@ def missing_data_report( X,
                          name        = 'dataset',
                          top_patterns = 20 ):
     """
-    Describes missing covariate data in the ANALYSED sample (after excluding rows without
+    Describes covariate missingness in the ANALYSED sample (after excluding rows without
     target/cluster and clusters that are too small) and, if df_csv is given, in the original CSV.
 
     -> dict with
        'summary'     : dict  (one row of the global summary table)
        'by_feature'  : DataFrame, one row per covariate (n and % missing, group, imputation
-                       strategy, % in the original CSV, no. of centers where the covariate is
-                       entirely missing / has at least one missing value, min/median/max % across centers)
+                       strategy, % in the original CSV, no. of centers with the covariate entirely
+                       missing / with at least one missing value, min/median/max % across centers)
        'by_cluster'  : DataFrame, one row per center (n subjects, % missing cells, % subjects with
                        at least one missing value, n covariates entirely missing in the center)
        'cluster_x_feature' : DataFrame centers x covariates with the % missing
@@ -283,39 +281,144 @@ def missing_data_report( X,
 # %%
 
 class Preprocessor:
-    """Imputation + standardization, to be fitted ONLY on the training set."""
+    """
+    Imputation + standardization, to be fitted ONLY on the training set.
+
+    Options for the missing-data sensitivity analyses (the defaults give the primary analysis):
+      imputation : 'median' (default; continuous and z with the median, binary with the mode)
+                   'mean'   (continuous and z with the mean, binary with the mode; federable in one round,
+                             see federated_mean_imputation_moments)
+                   'iterative' (chained regressions, BayesianRidge, on the covariates + center indicators;
+                             the outcome does NOT enter the imputation model because it is not available
+                             at prediction time)
+      indicators : True -> adds a 0/1 indicator for each covariate with missing values in the training set
+                   (treated as binary: centered only)
+      delta      : {covariate_name: d} -> the IMPUTED values of the covariate are shifted by
+                   d x SD of the observed values in the training set (MNAR analysis)
+    """
 
     _STRATEGY = { 'cont': 'median', 'bin': 'most_frequent', 'z': 'median' }
 
     def __init__( self,
-                  groups ):
+                  groups,
+                  imputation    = 'median',
+                  indicators    = False,
+                  delta         = None,
+                  feature_names = None ):
 
-        self.groups    = np.asarray(groups)
-        self.imputers  = {}
-        self.scaler_X  = None
-        self.scaler_Y  = StandardScaler()
+        if imputation not in ( 'median', 'mean', 'iterative' ):
+            raise ValueError( f"unknown imputation: {imputation}" )
+        self.groups        = np.asarray(groups)
+        self.imputation    = imputation
+        self.indicators    = bool( indicators )
+        self.delta         = dict( delta or {} )
+        self.feature_names = list( feature_names ) if feature_names is not None else None
+        self.imputers      = {}
+        self.scaler_X      = None
+        self.scaler_Y      = StandardScaler()
+
+
+    def _strategy( self ):
+
+        if self.imputation == 'mean':
+            return { 'cont': 'mean', 'bin': 'most_frequent', 'z': 'mean' }
+        return dict( self._STRATEGY )
+
+
+    def _cluster_dummies( self, clusters ):
+
+        if clusters is None:
+            raise ValueError( "imputation='iterative' requires the center indices" )
+        clusters = np.asarray( clusters )
+        return ( clusters[:, None] == self.cluster_levels_[None, :] ).astype( float )
+
+
+    def _impute( self,
+                 X,
+                 clusters = None ):
+
+        X = np.asarray( X, dtype = float )
+        if self.imputation == 'iterative':
+
+            D     = self._cluster_dummies( clusters )
+            X_imp = self.iter_imputer_.transform( np.hstack( [ X, D ] ) )[:, :X.shape[1]]
+
+        else:
+
+            X_imp = np.empty_like( X, dtype = float )
+            for g, imp in self.imputers.items():
+                cols = np.where( self.groups == g )[0]
+                X_imp[:, cols] = imp.transform( X[:, cols] )
+
+        if self.delta_shift_ is not None:
+            M     = np.isnan( X )
+            X_imp = X_imp + M * self.delta_shift_[None, :]
+
+        if self.indicators and len( self.ind_cols_ ):
+            X_imp = np.hstack( [ X_imp, np.isnan( X[:, self.ind_cols_] ).astype( float ) ] )
+
+        return X_imp
 
 
     def fit( self,
              X,
-             Y ):
+             Y,
+             clusters = None ):
 
-        X_imp = np.empty_like(X, dtype = float)
-        for g, strategy in self._STRATEGY.items():
+        X = np.asarray( X, dtype = float )
+        p = X.shape[1]
 
-            cols = np.where(self.groups == g)[0]
-            if len(cols) == 0:
-                continue
+        if self.imputation == 'iterative':
 
-            imp = SimpleImputer( strategy = strategy, keep_empty_features = True )
-            X_imp[:, cols] = imp.fit_transform( X[:, cols] )
-            self.imputers[g] = imp
+            from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+            from sklearn.impute       import IterativeImputer
+            self.cluster_levels_ = np.unique( np.asarray( clusters ) ) if clusters is not None else None
+            D   = self._cluster_dummies( clusters )
+            lo  = np.r_[ np.nanmin( X, axis = 0 ), np.zeros( D.shape[1] ) ]
+            hi  = np.r_[ np.nanmax( X, axis = 0 ), np.ones(  D.shape[1] ) ]
+            self.iter_imputer_ = IterativeImputer( max_iter = 25, random_state = 0, min_value = lo,
+                                                   max_value = hi, keep_empty_features = True )
+            self.iter_imputer_.fit( np.hstack( [ X, D ] ) )
 
-        # Center all columns; scale only the continuous ones to unit variance
+        else:
+
+            for g, strategy in self._strategy().items():
+                cols = np.where( self.groups == g )[0]
+                if len( cols ) == 0:
+                    continue
+                self.imputers[g] = SimpleImputer( strategy = strategy, keep_empty_features = True ).fit( X[:, cols] )
+
+        # delta adjustment: shift in units of the observed SD (training set)
+        self.delta_shift_ = None
+        if self.delta:
+            if self.feature_names is None:
+                raise ValueError( "delta requires feature_names" )
+            shift = np.zeros( p )
+            for name, d in self.delta.items():
+                j        = self.feature_names.index( name )
+                shift[j] = float( d ) * float( np.nanstd( X[:, j] ) )
+            self.delta_shift_ = shift
+
+        # indicators: one for each DISTINCT missingness mask in the training set (covariates that are always
+        # missing together, like the three ChildDev composites, would give identical columns and a singular design)
+        self.ind_cols_ = np.array( [], int )
+        if self.indicators:
+            Mtr, keep, seen = np.isnan( X ), [], set()
+            for j in np.where( Mtr.any( axis = 0 ) )[0]:
+                key = Mtr[:, j].tobytes()
+                if key not in seen:
+                    seen.add( key )
+                    keep.append( j )
+            self.ind_cols_ = np.array( keep, int )
+        self.groups_out = np.r_[ self.groups, np.array( [ 'bin' ] * len( self.ind_cols_ ) ) ]
+
+        X_imp = self._impute( X, clusters )
+
+        # Center all columns; scale to unit variance only the continuous ones
         self.mean_X = X_imp.mean( axis = 0 )
         std         = X_imp.std( axis = 0 )
         std[std < 1e-12] = 1.0
-        self.std_X  = np.where( self.groups == 'cont', std, 1.0 )
+        self.std_X  = np.where( self.groups_out == 'cont', std, 1.0 )
 
         self.scaler_Y.fit( Y )
 
@@ -323,15 +426,10 @@ class Preprocessor:
 
 
     def transform_X( self,
-                     X ):
+                     X,
+                     clusters = None ):
 
-        X_imp = np.empty_like(X, dtype = float)
-        for g, imp in self.imputers.items():
-
-            cols = np.where(self.groups == g)[0]
-            X_imp[:, cols] = imp.transform( X[:, cols] )
-
-        return ( X_imp - self.mean_X ) / self.std_X
+        return ( self._impute( X, clusters ) - self.mean_X ) / self.std_X
 
 
     def transform_Y( self,
@@ -346,6 +444,37 @@ class Preprocessor:
         return self.scaler_Y.inverse_transform( Y_scaled )
 
 
+def center_mean_imputation_stats( X ):
+    """
+    LOCAL computation (in the center) for federated mean imputation: for each covariate, number of
+    observed values, sum and sum of squares of the observed values, number of missing values.
+    """
+    X = np.asarray( X, dtype = float )
+    M = np.isnan( X )
+    Z = np.where( M, 0.0, X )
+
+    return { 'n_obs': ( ~M ).sum( 0 ), 'sum': Z.sum( 0 ), 'ssq': ( Z**2 ).sum( 0 ), 'n_miss': M.sum( 0 ) }
+
+
+def federated_mean_imputation_moments( stats ):
+    """
+    Server: from the statistics of a SINGLE round (center_mean_imputation_stats per center) derives the
+    imputed value (mean of the observed values) and the mean and SD of the column AFTER imputation, i.e. the
+    standardization statistics: imputed sum = S_obs + n_miss m;  sum of squares = SS_obs + n_miss m^2.
+    -> (imputed_value, mean, sd)  (population SD, as in Preprocessor)
+    """
+    n_obs = sum( s['n_obs']  for s in stats )
+    S     = sum( s['sum']    for s in stats )
+    SS    = sum( s['ssq']    for s in stats )
+    n_mis = sum( s['n_miss'] for s in stats )
+    m     = S / n_obs
+    N     = n_obs + n_mis
+    mean  = ( S + n_mis * m ) / N
+    var   = ( SS + n_mis * m**2 ) / N - mean**2
+
+    return m, mean, np.sqrt( np.maximum( var, 0.0 ) )
+
+
 # %%
 
 def make_repeated_cv_splits( clusters,
@@ -354,8 +483,8 @@ def make_repeated_cv_splits( clusters,
                              seed      = 0 ):
     """
     Repeated k-fold STRATIFIED BY CLUSTER: in each repetition every cluster
-    is permuted and distributed across the k folds (with a random offset to
-    balance fold sizes). Each subject appears exactly once in the test set
+    is permuted and distributed across the k folds (with a random offset to balance
+    fold sizes). Each subject appears exactly once in the test set
     per repetition.
 
     Returns a list of dicts {repeat, fold, train_idx, test_idx}.
@@ -414,9 +543,11 @@ def build_fold( raw,
                 train_idx,
                 test_idx,
                 train_fraction = 1.0,
-                seed           = 0 ):
+                seed           = 0,
+                preproc_opts   = None ):
     """
-    Builds the data structures of one fold. Preprocessing fitted ONLY on train.
+    Builds the structures of one fold. Preprocessing fitted ONLY on train.
+    preproc_opts: Preprocessor options (imputation, indicators, delta); None = default.
 
     fold = { 'local'        : {c: {'X_train','Y_train','n_train'}},
              'pooled_train' : {'X','Y','cluster','idx'},
@@ -427,14 +558,16 @@ def build_fold( raw,
     rng       = np.random.default_rng(seed)
     train_idx = _subsample_train( train_idx, raw.clusters, train_fraction, rng )
 
-    preproc = Preprocessor( raw.groups ).fit( raw.X[train_idx], raw.Y[train_idx] )
-
-    X_tr = preproc.transform_X( raw.X[train_idx] )
-    Y_tr = preproc.transform_Y( raw.Y[train_idx] )
-    X_te = preproc.transform_X( raw.X[test_idx] )
-    Y_te = preproc.transform_Y( raw.Y[test_idx] )
     cl_tr = raw.clusters[train_idx]
     cl_te = raw.clusters[test_idx]
+
+    preproc = Preprocessor( raw.groups, feature_names = raw.feature_names,
+                            **( preproc_opts or {} ) ).fit( raw.X[train_idx], raw.Y[train_idx], cl_tr )
+
+    X_tr = preproc.transform_X( raw.X[train_idx], cl_tr )
+    Y_tr = preproc.transform_Y( raw.Y[train_idx] )
+    X_te = preproc.transform_X( raw.X[test_idx], cl_te )
+    Y_te = preproc.transform_Y( raw.Y[test_idx] )
 
     local = {}
     for c in np.unique(cl_tr):
@@ -446,7 +579,7 @@ def build_fold( raw,
 
     unseen = set( np.unique(cl_te) ) - set( local.keys() )
     if unseen:
-        raise ValueError( f"Clusters in test but not in train: {unseen}" )
+        raise ValueError( f"Clusters in the test set but not in the training set: {unseen}" )
 
     return { 'local'        : local,
              'pooled_train' : { 'X': X_tr, 'Y': Y_tr, 'cluster': cl_tr, 'idx': train_idx },

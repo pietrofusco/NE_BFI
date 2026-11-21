@@ -1,37 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-simulation.py - simulation study designed according to ADEMP (Morris, White & Crowther, Stat Med 2019)
+simulation.py - simulation study following ADEMP (Morris, White & Crowther, Stat Med 2019)
 
 AIMS
   (1) how much federated partial pooling (BFI-Hetero) gains over local models and homogeneous BFI
-      as the number of patients per center decreases and the between-center variance changes;
+      as the number of patients per center decreases and as the between-center variance changes;
   (2) for which (n per center, non-linear share) the FEDERATED neural extractor improves on BFI-Hetero.
 
 DATA-GENERATING MECHANISM (simulate_dataset)
-  X : 7 continuous (AR(1) rho = 0.3 + center-specific mean shift), 3 binary (center-specific
-      prevalence), 3 standard normal.
+  X : 7 continuous (AR(1) rho = 0.3 + center-specific mean shift), 3 binary (center-specific prevalence),
+      3 standard normal.
   y = 3 * ( sqrt(1-nonlin) f_lin(x) + sqrt(nonlin) f_nl(x) + u_c + eps ) + 10
       f_lin with center-specific slopes (slope_het); f_nl: sine, quadratic, interaction;
       u_c ~ N(0, tau^2); eps ~ N(0, 1/snr); f_lin and f_nl standardized.
-  Factors: tau x nonlin x n_per_cluster (cluster sizes +-20%, minimum 5).
+  Factors: tau x nonlin x n_per_cluster (sizes +-20%, minimum 5).
 
 ESTIMAND      out-of-sample R^2 (5-fold CV stratified by center) and dR2 = R2(model) - R2(reference).
 METHODS       cfg['simulation']['models_linear'] on n_datasets replicates; models_neural on the first
               n_datasets_neural (same datasets => paired comparisons).
 PERFORMANCE   mean, MCSE = SD / sqrt(n_rep), win rate = P(dR2 > 0) with binomial MCSE.
 
-Parallel (joblib) and RESUMABLE execution: each scenario is saved in out_dir/parts/.
-
-Default linear models include BFI-Fixed (Jonker et al. 2024), DLMM (Luo et al. 2022),
-Federated EM-LMM (iterative) and Ridge (local, tuned); comm_rounds column.  Resuming is
-incremental: for scenarios already saved, only the missing models are computed.
+Parallel (joblib) and RESUMABLE execution: each scenario is saved in out_dir/parts/.  Resuming is
+incremental per (model, replicate) pair: only the missing pairs are computed (new models, or new
+replicates if n_datasets / n_datasets_neural are increased), on the same datasets.  The seed depends on
+the VALUES of the scenario (scenario_seed), not on its position in the grid; on resume the seed of each
+replicate is read back from the file, and a file with different seeds across models is rejected.
 """
 # %%
 
 import pathlib
 import time
-
 import numpy  as np
 import pandas as pd
 
@@ -57,7 +56,7 @@ def simulate_dataset( n_clusters      = 25,
 
     rng   = np.random.default_rng( seed )
     p     = p_cont + p_bin + p_z
-    # minimum cluster size 5: a larger minimum would distort the scenarios with n_per_cluster < 10
+    # minimum cluster size 5, so that the scenarios with n_per_cluster < 10 are not distorted
     sizes = np.maximum( min_size, np.round( n_per_cluster * rng.uniform( 0.8, 1.2, n_clusters ) ).astype(int) )
 
     cov   = 0.3 ** np.abs( np.subtract.outer( np.arange(p_cont), np.arange(p_cont) ) )
@@ -69,15 +68,15 @@ def simulate_dataset( n_clusters      = 25,
     X_list, lin_list, cl_list, u_list = [], [], [], []
     for c in range(n_clusters):
 
-        n      = sizes[c]
-        shift  = rng.normal( 0, covariate_shift, p_cont )
-        Xc     = np.empty( (n, p) )
+        n                          = sizes[c]
+        shift                      = rng.normal( 0, covariate_shift, p_cont )
+        Xc                         = np.empty( (n, p) )
         Xc[:, :p_cont]             = rng.normal( size = (n, p_cont) ) @ L.T + shift
         prev                       = 1.0 / (1.0 + np.exp( -0.5 * rng.normal( size = p_bin ) ))
         Xc[:, p_cont:p_cont+p_bin] = ( rng.uniform( size = (n, p_bin) ) < prev ).astype(float)
         Xc[:, p_cont+p_bin:]       = rng.normal( size = (n, p_z) )
-
-        beta_c = beta + slope_het * rng.normal( size = p )
+        beta_c                     = beta + slope_het * rng.normal( size = p )
+        
         X_list.append( Xc )
         lin_list.append( Xc @ beta_c )
         cl_list.append( np.full( n, c ) )
@@ -100,22 +99,56 @@ def simulate_dataset( n_clusters      = 25,
                [f'z{i}' for i in range(p_z)] )
     groups = np.array( ['cont'] * p_cont + ['bin'] * p_bin + ['z'] * p_z )
 
-    return RawData( X = X, Y = y.reshape(-1, 1), clusters = cl, feature_names = names,
-                    groups = groups, target_names = ['y'],
-                    name = f'sim_nl{nonlin}_n{n_per_cluster}_s{seed}',
-                    info = { 'r2_max_pop' : float( np.var( 3.0 * signal ) / np.var( y ) ),
-                             # CONDITIONAL ceiling (seen centers: the center intercept is predictable)
-                             'r2_max_cond': float( np.var( 3.0 * ( signal + u ) ) / np.var( y ) ),
-                             'icc_true'   : float( tau**2 / ( tau**2 + 1.0 / snr ) ),
-                             'sizes'      : sizes.tolist() } )
+    return RawData( X             = X, 
+                    Y             = y.reshape(-1, 1), 
+                    clusters      = cl, 
+                    feature_names = names,
+                    groups        = groups, 
+                    target_names  = ['y'],
+                    name          = f'sim_nl{nonlin}_n{n_per_cluster}_s{seed}',
+                    info          = { 'r2_max_pop' : float( np.var( 3.0 * signal ) / np.var( y ) ),
+                                      # CONDITIONAL ceiling (seen centers: the center intercept is predictable)
+                                      'r2_max_cond': float( np.var( 3.0 * ( signal + u ) ) / np.var( y ) ),
+                                      'icc_true'   : float( tau**2 / ( tau**2 + 1.0 / snr ) ),
+                                      'sizes'      : sizes.tolist() } )
 
 
 # %%
 
 def _scenario_seed( i_tau, i_nl, i_n, rep ):
-    """Deterministic seed, distinct for each (scenario, replicate)."""
+    """Index-based seed formula for the reference grid of the published runs."""
 
     return int( 10_000_000 + 1_000_000 * i_tau + 100_000 * i_nl + 10_000 * i_n + rep )
+
+
+# Reference grid of the published runs.  The seed depends on the VALUES of the scenario: for the values of
+# this grid it equals the index-based formula (same datasets as the saved results); for other values it
+# uses a hash of the values.  Adding or reordering values in the config does not change the datasets.
+_REF_TAU = [ 0.3, 0.8 ]
+_REF_NL  = [ 0.0, 0.3, 0.6 ]
+_REF_N   = [ 5, 10, 20, 50, 100 ]
+
+
+def _ref_index( value, ref ):
+
+    for i, r in enumerate( ref ):
+        if np.isclose( float( value ), float( r ) ):
+            return i
+    return None
+
+
+def scenario_seed( tau, nl, n_pc, rep ):
+    """Deterministic seed per (scenario values, replicate), independent of the position in the grid."""
+
+    if not 0 <= rep < 10_000:
+        raise ValueError( f"rep out of range (0-9999): {rep}" )
+    idx = ( _ref_index( tau, _REF_TAU ), _ref_index( nl, _REF_NL ), _ref_index( n_pc, _REF_N ) )
+    if None not in idx:
+        return _scenario_seed( *idx, rep )
+
+    import zlib
+    key = f"{float(tau):.6g}|{float(nl):.6g}|{int(n_pc)}".encode()
+    return int( 100_000_000 + ( zlib.crc32( key ) % 10_000 ) * 10_000 + rep )
 
 
 def _run_one_dataset( tau, nl, n_pc, rep, seed, sim, sim_cfg, names ):
@@ -161,7 +194,7 @@ _KNOWN_ROUNDS = { 'Ridge (local)': 0.0, 'Ridge (local, tuned)': 0.0, 'BFI-Linear
 
 
 def _with_comm_rounds( df ):
-    """Backward compatibility with result files without the comm_rounds column: known deterministic values."""
+    """Fills comm_rounds for result files without that column (known deterministic values)."""
 
     df = df.copy()
     if 'comm_rounds' not in df.columns:
@@ -177,8 +210,8 @@ def summarize_simulation( raw_df,
     """
     -> (summary, paired)
        summary: per scenario x model  -> n_rep, mean R2 and MCSE, mean CalibSlope
-       paired : per scenario x model != reference, over the replicates in which BOTH were
-                estimated -> mean dR2, MCSE, win rate and MCSE of the win rate
+       paired : per scenario x model != reference, on the replicates where BOTH were
+                estimated -> mean dR2, MCSE, win rate and win-rate MCSE
     """
     keys   = [ 'tau', 'nonlin', 'n_per_cluster' ]
     raw_df = _with_comm_rounds( raw_df )
@@ -217,7 +250,7 @@ def run_simulation( cfg,
                     verbose = True ):
     """
     Runs the tau x nonlin x n_per_cluster grid.  With out_dir, each completed scenario is saved
-    in out_dir/parts/ and skipped on subsequent runs (resume after interruption).
+    in out_dir/parts/ and skipped in later runs (resume after interruption).
     -> (raw_df, summary, paired)
     """
     from joblib import Parallel, delayed
@@ -248,32 +281,49 @@ def run_simulation( cfg,
         parts.mkdir( parents = True, exist_ok = True )
 
     all_rows = []
-    for i_t, tau in enumerate( tau_grid ):
-        for i_l, nl in enumerate( nl_grid ):
-            for i_n, n_pc in enumerate( n_grid ):
+    for tau in tau_grid:
+        for nl in nl_grid:
+            for n_pc in n_grid:
 
                 tag  = f"tau{tau}_nl{nl}_n{n_pc}"
                 path = parts / f"{tag}.csv" if parts is not None else None
 
-                # INCREMENTAL resume. If the scenario is already saved, only the missing models are
-                # computed, on the SAME datasets (deterministic seeds and identical CV splits), and
-                # appended: comparisons stay paired and the neural model does not need to be re-run.
-                df_old, miss_lin, miss_nn = None, list( m_lin ), list( m_nn )
+                # INCREMENTAL resume per (model, replicate).  Only the missing pairs are computed:
+                # new models, but also new replicates if n_datasets / n_datasets_neural have increased.
+                # The seed of an already saved replicate is read back from the file: the new models run
+                # on the SAME datasets.
+                df_old, have, seed_of = None, set(), {}
                 if path is not None and path.exists():
-                    df_old   = _with_comm_rounds( pd.read_csv( path ) )
-                    have     = set( df_old['model'] )
-                    miss_lin = [ m for m in m_lin if m not in have ]
-                    miss_nn  = [ m for m in m_nn  if m not in have ]
-                    if not miss_lin and ( not miss_nn or n_rep_nn == 0 ):
-                        if verbose:
-                            print( f"  [sim] {tag}: already done ({df_old['rep'].nunique()} reps), skipped" )
-                        all_rows.append( df_old )
-                        continue
+                    df_old  = _with_comm_rounds( pd.read_csv( path ) )
+                    have    = set( zip( df_old['model'], df_old['rep'].astype( int ) ) )
+                    for r, g in df_old.groupby( 'rep' ):
+                        seeds = g['seed'].unique()
+                        if len( seeds ) != 1:
+                            raise RuntimeError( f"[sim] {tag}, replicate {r}: different seeds across models {list(seeds)}: "
+                                                f"unpaired file, it must be regenerated" )
+                        seed_of[int( r )] = int( seeds[0] )
+                        if seed_of[int( r )] != scenario_seed( tau, nl, n_pc, int( r ) ) and verbose:
+                            print( f"  [sim] {tag}, replicate {r}: seed in the file differs from the computed one, "
+                                   f"using the one in the file" )
+
+                todo = {}
+                for r in range( max( n_rep, n_rep_nn ) ):
+                    need = [ m for m in m_lin if r < n_rep and ( m, r ) not in have ]
+                    need += [ m for m in m_nn if r < n_rep_nn and ( m, r ) not in have ]
+                    if need:
+                        todo[r] = need
+
+                if not todo:
+                    if verbose:
+                        print( f"  [sim] {tag}: already done ({df_old['rep'].nunique()} reps), skipped" )
+                    all_rows.append( df_old )
+                    continue
 
                 t0   = time.time()
-                jobs = [ delayed( _run_one_dataset )( tau, nl, n_pc, r, _scenario_seed( i_t, i_l, i_n, r ),
-                                                      sim, sim_cfg, miss_lin + ( miss_nn if r < n_rep_nn else [] ) )
-                         for r in range( n_rep ) if miss_lin or ( miss_nn and r < n_rep_nn ) ]
+                jobs = [ delayed( _run_one_dataset )( tau, nl, n_pc, r,
+                                                      seed_of.get( r, scenario_seed( tau, nl, n_pc, r ) ),
+                                                      sim, sim_cfg, need )
+                         for r, need in todo.items() ]
                 out  = Parallel( n_jobs = n_jobs )( jobs )
                 df_s = pd.DataFrame( [ row for rows in out for row in rows ] )
                 if df_old is not None:

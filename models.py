@@ -3,30 +3,21 @@
 """
 models.py - all models in a single module.
 
-Models
-  * BFI-Linear: homogeneous BFI (Jonker et al. 2024).
-  * BFI-Hetero (section 1b): global intercept + LOCAL center intercepts, marginalized on the
-    server via the Schur complement; sigma^2 and tau^2 estimated by EM on the server, one-shot.
-    With lambda_g -> 0 it coincides with the random-intercept LMM (REML), verified in the tests.
-  * State-of-the-art comparators (section 1c):
-      - BFI-Fixed: BFI with FIXED center intercepts (Jonker et al. 2024), one round, no tau^2 estimate.
-      - DLMM (Luo et al. 2022): lossless one-shot distributed LMM on aggregate statistics, REML on the server.
-      - Federated EM-LMM: iterative distributed EM (one round per iteration, fixed budget), reference
-        for the communication cost.
-      - Ridge (local, tuned): penalty chosen internally per center (sensitivity analysis).
-  * Neural-BFI: FEDERATED extractor (FedProx) by default; the centralized version is kept only
-    as an explicit non-federated reference.  Z standardized with aggregate training statistics.
-    Early stopping with internal per-center validation and identical budget for the federated and
-    centralized encoder (see fit_predict_neural_bfi); extras: best_epoch, epochs_run.
-  * Gradient-based importance disabled by default (appendix material).
-  * extras['comm_rounds'] / extras['msg_floats'] for all federated models; LMM: extras['sigma2']
-    for the ICC computation.
-
 Contents
-  1. LocalBayesianGLM + aggregate_bfi + fit_bfi       (BFI, Jonker et al. 2024)
-  2. fit_predict_bfi_linear / fit_predict_neural_bfi  (fit+predict functions on one fold)
-  3. NeuralFeatureExtractor + FederatedFeatureExtractorTrainer (FedAvg/FedProx) + gradient_importance
-  4. BaselineModels (local and pooled Ridge/MLP, random-intercept LMM)
+  1.  LocalBayesianGLM + aggregate_bfi + fit_bfi       (BFI, Jonker et al. 2024)
+  1b. Heterogeneous BFI: global intercept + LOCAL center intercepts, marginalized on the server via
+      the Schur complement; sigma^2 and tau^2 estimated by EM on the server, one-shot.  With
+      lambda_g -> 0 it coincides with the random-intercept LMM (REML), checked in the tests.
+  1c. State-of-the-art comparators: BFI-Fixed (Jonker et al. 2024), DLMM (Luo et al. 2022),
+      Federated EM-LMM (iterative, reference for the communication cost); extras['comm_rounds'] /
+      extras['msg_floats'] for all federated models.
+  2.  fit_predict_* : fit + predict functions on one fold
+  3.  NeuralFeatureExtractor + FederatedFeatureExtractorTrainer (FedAvg/FedProx) + gradient_importance.
+      Neural-BFI: FEDERATED extractor (FedProx) by default, with early stopping on an internal
+      per-center validation split and the same budget for federated and centralized encoders;
+      Z standardized with aggregate training statistics.  Gradient importance disabled by default.
+  4.  BaselineModels (local and pooled Ridge/MLP, local Ridge with internally tuned penalty,
+      random-intercept LMM)
 
 Aggregation formula (global prior counted ONCE):
     A_global     = sum_l ( A_l - lambda_l I ) + lambda_g I
@@ -51,7 +42,7 @@ from sklearn.neural_network import MLPRegressor
 
 try:
     import torch
-except Exception:                                    # neural part unavailable (also if torch is broken)
+except Exception:                                    # neural part not available (including a broken torch install)
     torch = None
     
     
@@ -83,7 +74,7 @@ class LocalBayesianGLM:
         
     def _negative_log_posterior( self,
                                  theta_flat ):
-        """For numerical sanity checks only (used in the tests)."""
+        """Only for numerical sanity checks (used in the tests)."""
         
         theta = theta_flat.reshape( self.num_outcomes, self.k )
         mu    = self.Z @ theta.T
@@ -168,7 +159,7 @@ def fit_bfi( feats,
              sigma2_bounds = (0.02, 2.0) ):
     """
     feats, Ys: {cluster: (n_c, k)} / {cluster: (n_c, q)}.
-    sigma2_mode: 'fixed' | 'local' (RSS_l/(n_l-df_l)) | 'global' (two steps, 1 scalar per center).
+    sigma2_mode: 'fixed' | 'local' (RSS_l/(n_l-df_l)) | 'global' (two passes, 1 scalar per center).
     Returns {'theta' (flat), 'A_global', 'sigma2' (dict), 'local_results'}.
     """
     if sigma2_mode not in ( 'fixed', 'local', 'global' ):
@@ -203,22 +194,22 @@ def fit_bfi( feats,
 #             beta ~ N(0, I/lambda_g)  (global prior, counted ONCE)
 #             alpha_c ~ N(0, tau^2)    (center intercept: LOCAL parameter, never aggregated)
 #
-#   Each center sends the BFI message  (theta_hat_l, A_l, rss_l, n_l)  ONCE, computed with
+#   Each center sends ONCE the BFI message  (theta_hat_l, A_l, rss_l, n_l)  computed with
 #   known priors (lambda_s on beta, lambda_c on alpha_c, sigma^2 = 1).  Since the priors are known,
 #   the server recovers exactly the sufficient statistics  S_l = W_l'W_l, s_l = W_l'y_l,
 #   yy_l = y_l'y_l  (W_l = [1 | X_l | 1]) and can therefore:
 #     (i)  marginalize alpha_c (Schur complement) and solve for beta;
-#     (ii) estimate sigma^2 and tau^2 by EM WITHOUT further communication rounds. Since beta has
-#          an (almost) flat prior and is integrated out in the E step, EM maximizes the RESTRICTED
+#     (ii) estimate sigma^2 and tau^2 by EM WITHOUT further communication rounds. Since beta has a
+#          (nearly) flat prior and is integrated out in the E step, the EM maximizes the RESTRICTED
 #          likelihood: with lambda_g -> 0 the result coincides with the REML LMM fitted on the pooled data
-#   (verified in test_pipeline.py).  NB: sharing (S_l, s_l, yy_l) is equivalent to sharing the
-#   center's sufficient statistics: the disclosure risk with small n_l should be discussed.
+#   (checked in test_pipeline.py).  NB: sharing (S_l, s_l, yy_l) is equivalent to sharing the
+#   sufficient statistics of the center: the disclosure risk with small n_l must be discussed.
 
 def local_bfi_message( X,
                        y,
                        lambda_s = 1.0,
                        lambda_c = 1.0 ):
-    """LOCAL computation (inside the center). Returns the one-shot BFI message."""
+    """LOCAL computation (in the center). Returns the one-shot BFI message."""
 
     y   = np.asarray( y, dtype = float ).ravel()
     W   = np.hstack( [ np.ones( (len(y), 1) ), X, np.ones( (len(y), 1) ) ] )   # [b0 | beta | alpha_c]
@@ -257,9 +248,9 @@ def aggregate_bfi_hetero( messages,
                           tau2_bounds    = (1e-6, 1e3) ):
     """
     Server.  messages: {cluster: message from local_bfi_message}.
-    estimate=True : sigma^2 and tau^2 estimated by EM (REML) on the server; False: fixed.
-    Returns {'beta' (incl. global intercept at position 0), 'alpha' {c: float},
-                 'sigma2', 'tau2', 'A_global', 'n_iter'}.
+    estimate=True : sigma^2 and tau^2 estimated by EM (REML) on the server; False: kept fixed.
+    Returns {'beta' (incl. global intercept in position 0), 'alpha' {c: float},
+             'sigma2', 'tau2', 'A_global', 'n_iter'}.
     """
     ids   = list( messages.keys() )
     suff  = { c: _sufficient_from_message( messages[c] ) for c in ids }
@@ -349,7 +340,7 @@ def predict_bfi_hetero( out,
 #
 #   (a) BFI-Fixed  -- BFI for heterogeneous populations with FIXED center intercepts
 #       (Jonker et al. 2024, "Bayesian Federated Inference for regression models based on non-shared
-#       multicenter data sets from heterogeneous populations").  Aggregate model
+#       multicenter data sets from heterogeneous populations").  Aggregated model
 #           y_ci = gamma_c + x_ci' beta + eps_ci,   eps ~ N(0, sigma^2)
 #       without a general intercept; independent zero-mean Gaussian priors with KNOWN precision
 #       (beta: lambda_g; gamma_c: lambda_int, 0.001 or 0.1 in the paper).  No between-center variance
@@ -363,27 +354,27 @@ def predict_bfi_hetero( out,
 #       estimated on the server with the scalar rss_c of the message (no additional round).
 #
 #   (b) DLMM  -- Luo et al. 2022 (Nat Commun 13:1678), "DLMM as a lossless one-shot algorithm for
-#       collaborative multi-site distributed linear mixed models".  Each center sends the aggregate
-#       statistics  (X~'X~, X~'y, y'y, n)  ONCE, with X~ = [1 | X];  the server maximizes the
+#       collaborative multi-site distributed linear mixed models".  Each center sends ONCE the
+#       aggregate statistics  (X~'X~, X~'y, y'y, n)  with X~ = [1 | X];  the server maximizes the
 #       likelihood (REML by default, ML optional) of the random-intercept model and computes the
 #       BLUPs.  For the random intercept  V_c = sigma^2 (I + g 1 1'),  g = tau^2 / sigma^2,
 #           V_c^{-1} = ( I - w_c 1 1' ) / sigma^2,   w_c = g / (1 + n_c g),   log|V_c| = n_c log sigma^2 + log(1 + n_c g)
 #       so all quantities depend only on the aggregate statistics: sigma^2 is profiled out
-#       analytically, leaving a scalar optimization over log g.  NB: DLMM is also ONE-SHOT and
+#       analytically and a scalar optimization over log g remains.  NB: DLMM is also ONE-SHOT and
 #       lossless; numerically it coincides with the pooled REML LMM and with BFI-Hetero for lambda_g -> 0.
-#       Independent implementation (direct maximization, not EM), also used as a cross-check.
+#       Independent implementation (direct maximization, not EM), also used as a check.
 #
 #   (c) Federated EM-LMM (iterative) -- reference for the COMMUNICATION COST: the same EM as
 #       BFI-Hetero run as a standard distributed algorithm, in which each iteration requires one
 #       round (the server sends the current (sigma^2, tau^2), the centers return their E-step
-#       contributions).  With a budget of R rounds EM may not reach convergence.  Emulated in-process:
-#       the per-iteration estimates are identical to those of the E/M step of aggregate_bfi_hetero.
+#       contributions).  With a budget of R rounds the EM may not reach convergence.  Emulated
+#       in-process: the per-iteration estimates are identical to those of the E/M step of aggregate_bfi_hetero.
 
 def local_bfi_fixed_message( X,
                              y,
                              lambda_s   = 1.0,
                              lambda_int = 1e-3 ):
-    """LOCAL computation (inside the center) for BFI-Fixed: MAP and curvature of the model [beta | gamma_c], sigma^2 = 1."""
+    """LOCAL computation (in the center) for BFI-Fixed: MAP and curvature of the model [beta | gamma_c], sigma^2 = 1."""
 
     y   = np.asarray( y, dtype = float ).ravel()
     W   = np.hstack( [ X, np.ones( (len(y), 1) ) ] )                              # [beta | gamma_c]
@@ -408,8 +399,8 @@ def aggregate_bfi_fixed( messages,
     """
     BFI-Fixed server (BFI formula with center-specific parameters).
     messages: {cluster: message from local_bfi_fixed_message}.
-    estimate_sigma2: sigma^2 = RSS(theta_BFI) / (N - p_eff), fixed point (sigma^2 enters only through
-    its ratio with the priors); the RSS terms are functions of the message (theta_c, A_c, rss_c).
+    estimate_sigma2: sigma^2 = RSS(theta_BFI) / (N - p_eff), fixed point (sigma^2 enters only through its
+    ratio with the priors); the RSS terms are functions of the message (theta_c, A_c, rss_c).
     -> {'beta', 'gamma' {c: float}, 'sigma2', 'A_global', 'n_iter'}
     """
     ids  = list( messages.keys() )
@@ -465,7 +456,7 @@ def predict_bfi_fixed( out,
 
 def local_dlmm_summary( X,
                         y ):
-    """LOCAL computation (inside the center) for DLMM: aggregate statistics sent only once."""
+    """LOCAL computation (in the center) for DLMM: aggregate statistics sent only once."""
 
     y  = np.asarray( y, dtype = float ).ravel()
     Xt = np.hstack( [ np.ones( (len(y), 1) ), X ] )
@@ -475,7 +466,7 @@ def local_dlmm_summary( X,
 
 def _dlmm_pieces( summ,
                   g ):
-    """GLS given g = tau^2/sigma^2: M = X'V^{-1}X sigma^2, m = X'V^{-1}y sigma^2, r = (y-Xb)'V^{-1}(y-Xb) sigma^2."""
+    """GLS dato g = tau^2/sigma^2: M = X'V^{-1}X sigma^2, m = X'V^{-1}y sigma^2, r = (y-Xb)'V^{-1}(y-Xb) sigma^2."""
 
     k = summ[0]['XtX'].shape[0]
     M, m, q, logdet = np.zeros( (k, k) ), np.zeros( k ), 0.0, 0.0
@@ -496,7 +487,7 @@ def fit_dlmm( summaries,
               reml             = True,
               log_g_bounds     = (-20.0, 10.0) ):
     """
-    Server DLMM.  summaries: {cluster: local_dlmm_summary}.
+    DLMM server.  summaries: {cluster: local_dlmm_summary}.
     Profile of -2 log L (sigma^2 profiled out):
         REML:  (N - k) log( r / (N - k) ) + sum_c log(1 + n_c g) + log|M|
         ML  :   N      log( r /  N      ) + sum_c log(1 + n_c g)
@@ -643,9 +634,9 @@ if torch is not None:
                                 alpha_recon = 0.1,
                                 beta_pred   = 1.0 ):
             """
-            Centralized full-batch training with a SINGLE Adam optimizer; every `check_every` epochs it
+            Centralized full-batch training with ONE Adam optimizer; every `check_every` epochs it
             evaluates the validation loss and keeps the best weights (epoch 0 included); it stops after
-            `patience` checks without improvement.  Same checking scheme as the federated trainer
+            `patience` checks without improvement.  Same checking schedule as the federated trainer
             (check_every = local_epochs, max_epochs = rounds * local_epochs) => comparable budget.
             """
             opt  = torch.optim.Adam( self.parameters(), lr = lr )
@@ -703,7 +694,7 @@ if torch is not None:
 
 class FederatedFeatureExtractorTrainer:
     """
-    FedAvg / FedProx (McMahan 2017; Li 2020): in each round, every center trains for `local_epochs`
+    FedAvg / FedProx (McMahan 2017; Li 2020): in each round every center trains `local_epochs`
     epochs starting from the global weights; the server averages the weights with weight n_c / n_tot.
     In-process simulation: network communication is not modelled.
     """
@@ -754,7 +745,7 @@ class FederatedFeatureExtractorTrainer:
                local_val = None,
                patience  = None ):
         """
-        local_val: validation {center: {'X_train','Y_train'}} (optional).  If given, after each round
+        local_val: {center: {'X_train','Y_train'}} for validation (optional).  If given, after each round
         the federated validation loss is computed, the best global weights are kept (round 0 included)
         and training stops after `patience` rounds without improvement.  Info in self.history.
         """
@@ -859,7 +850,7 @@ def _bfi_fit_predict( feats,
                       clusters_test,
                       cfg,
                       hetero ):
-    """Fit BFI (homogeneous or heterogeneous) on precomputed features -> test predictions + extras."""
+    """BFI fit (homogeneous or heterogeneous) on precomputed features -> test predictions + extras."""
 
     if hetero:
 
@@ -886,7 +877,7 @@ def fit_predict_bfi_linear( fold,
     pred, extras, _ = _bfi_fit_predict( feats, Ys, test['X'], test['cluster'], cfg, hetero )
     # Communication rounds BEYOND the common standardization round (sums and sums of squares).
     # BFI-Linear with sigma2_mode='global': the RSS at the global theta can be computed on the server if the
-    # message includes the scalar y'y, so a single round suffices (same numbers as the in-process computation).
+    # message includes the scalar y'y, so a single round remains (same numbers as the in-process computation).
     extras['comm_rounds'] = 1.0
     extras['msg_floats']  = float( message_floats( 'BFI-Hetero' if hetero else 'BFI-Linear', fold['input_dim'] ) )
 
@@ -895,7 +886,7 @@ def fit_predict_bfi_linear( fold,
 
 def fit_predict_bfi_fixed( fold,
                            cfg ):
-    """BFI with FIXED center intercepts (Jonker et al. 2024): one round, no tau^2 estimate."""
+    """BFI with FIXED center intercepts (Jonker et al. 2024): one round, no estimate of tau^2."""
 
     f = { 'lambda_int': 1e-3, 'lambda_s': cfg.get( 'lambda_local', 1.0 ), 'estimate_sigma2': True }
     f.update( cfg.get( 'fixed_intercepts', {} ) )
@@ -933,8 +924,8 @@ def fit_predict_dlmm( fold,
 def fit_predict_fed_em_lmm( fold,
                             cfg ):
     """
-    Federated EM-LMM (iterative): distributed EM with ONE round per iteration and a max_rounds budget.
-    Same model and priors as BFI-Hetero: at convergence it coincides with it; the differences
+    Federated EM-LMM (iterative): distributed EM with ONE round per iteration and budget max_rounds.
+    Same model and same priors as BFI-Hetero: at convergence it coincides with it; the differences
     measure the cost of truncation (comm_rounds = iterations performed).
     """
     h = { 'lambda_s': 1.0, 'lambda_c': 1.0 }
@@ -960,7 +951,7 @@ def _split_local_for_validation( local,
                                  val_fraction = 0.2,
                                  seed         = 0,
                                  min_train    = 2 ):
-    """For each center: round(val_fraction * n) subjects in validation, leaving >= min_train in training."""
+    """For each center: round(val_fraction * n) subjects in validation, keeping >= min_train in training."""
 
     rng = np.random.default_rng( seed + 104729 )
     tr, va = {}, {}
@@ -992,15 +983,14 @@ def fit_predict_neural_bfi( fold,
                or centralized (False: NON-federated reference; NOT a guaranteed upper bound).
 
     Early stopping (cfg['early_stopping']) with internal per-center validation and the SAME budget
-    for federated and centralized training: max_epochs = rounds * local_epochs, check every
-    local_epochs epochs, same patience.  Without it, the centralized extractor (300 epochs without
-    early stopping) overfits with small centers, which would make the comparison unfair.
+    for federated and centralized: max_epochs = rounds * local_epochs, check every local_epochs
+    epochs, same patience, so that the two encoders are compared fairly.
     neural_override: overrides cfg['neural'] (e.g. {'beta_pred': 0.0} -> unsupervised autoencoder).
     hetero: BFI with center intercepts (same specification as 'BFI-Hetero').
 
-    Z is standardized with the TRAINING mean/SD (when federated: sums and sums of squares per
-    center, one additional round of aggregate statistics) before BFI, so that the prior lambda
-    acts on the same scale for X and Z.
+    Z is standardized with the TRAINING mean/SD (federated: sums and sums of squares per center,
+    one additional round of aggregate statistics) before the BFI, so that the prior lambda acts
+    on the same scale for X and Z.
     """
     if torch is None:
         raise ImportError( "torch not available: cannot run Neural-BFI" )
@@ -1023,8 +1013,8 @@ def fit_predict_neural_bfi( fold,
     es = { 'enabled': True, 'val_fraction': 0.2, 'patience': 3, 'min_train': 2 }
     es.update( cfg.get( 'early_stopping', {} ) )
 
-    # Validation split INSIDE the training data of each center (never the fold's test set). The encoder
-    # sees only the training part; the BFI head is then estimated on ALL the training data of the fold.
+    # Validation split INSIDE the training part of each center (never the fold's test set). The encoder
+    # sees only the training part; the BFI head is then estimated on the WHOLE training part of the fold.
     if es['enabled']:
         enc_train, enc_val = _split_local_for_validation( fold['local'], es['val_fraction'], seed, es['min_train'] )
     else:
@@ -1042,7 +1032,7 @@ def fit_predict_neural_bfi( fold,
 
         nfe = factory()
         if use_es:
-            # SAME budget and same checking scheme as the federated trainer
+            # SAME budget and checking schedule as the federated trainer
             stack = lambda dd, k: np.vstack( [ d[k] for d in dd.values() ] )
             hist  = nfe.fit_early_stopping( stack( enc_train, 'X_train' ), stack( enc_train, 'Y_train' ),
                                             stack( enc_val, 'X_train' ),   stack( enc_val, 'Y_train' ),
@@ -1142,7 +1132,7 @@ class BaselineModels:
 
 
     def _ridge_tuned( self, X, y, seed = 0 ):
-        """Local ridge with the penalty chosen INTERNALLY (efficient GCV/leave-one-out) on the center's training data only."""
+        """Local Ridge with penalty chosen INTERNALLY (GCV / efficient leave-one-out) on the center's training data only."""
 
         return RidgeCV( alphas = self.tuned_alphas ).fit( X, y )
 
@@ -1157,9 +1147,9 @@ class BaselineModels:
     def mixed_effects( self,
                        fold ):
         """
-        LMM with a random intercept per cluster (REML): y = X beta + u_c + eps.
+        Random-intercept LMM per cluster (REML): y = X beta + u_c + eps.
         extras['sm_converged'] records the convergence reported by statsmodels; with very small
-        centers it can be False (DLMM, which optimizes the same REML, then reaches a restricted
+        centers it may be False (DLMM, which optimizes the same REML, then reaches a restricted
         log-likelihood >= that of statsmodels).
         Prediction = fixed effects + center BLUP. If the fit fails it falls back to pooled Ridge
         (extras['fallback'] = 1).  NON-federated model: "oracle" reference.
